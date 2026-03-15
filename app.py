@@ -77,8 +77,9 @@ def generar_cuadro_maestro(mes, ano, h_nomina, h_estado, sugerencias):
 
     for d in range(1, dias_mes + 1):
         dia_str, fecha = str(d), datetime(ano, mes, d)
-        wd, es_f = fecha.weekday(), (d in festivos or wd == 6)
-
+        wd = fecha.weekday()
+        es_f = (d in festivos or wd == 6)
+        
         if d == 1:
             for p in PERSONAL_OFICIAL:
                 if h_estado.get(p, {}).get('termino_noche'): df.at[p, '1'], ultima_noche[p] = 'P', 0
