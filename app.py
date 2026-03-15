@@ -6,7 +6,7 @@ import calendar
 import io
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Sistema Maestro Quirúrgico", page_icon="🏥", layout="wide")
+st.set_page_config(page_title="Gestor Automático de Turnos", page_icon="🏥", layout="wide")
 
 PERSONAL_OFICIAL = [
     "GERLIS DOMINGUEZ", "ANGIE BERNAL", "JHON RIOS", "MARCELA CASTRO",
@@ -137,7 +137,7 @@ def generar_cuadro_maestro(mes, ano, h_nomina, h_estado, sugerencias):
     return df.replace("", "D")
 
 # --- INTERFAZ ---
-st.title("🏥 Sistema de Turnos GINELAP - V5.0 (Colaborativo)")
+st.title("🏥 Gestor Automático de Turnos - Instrumentación")
 with st.sidebar:
     st.header("1. Historial Base")
     archivo = st.file_uploader("Subir Cuadro Mes Anterior", type=['csv', 'xlsx'])
