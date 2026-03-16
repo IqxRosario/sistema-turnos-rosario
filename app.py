@@ -25,7 +25,6 @@ def obtener_festivos_colombia(ano, mes):
 def procesar_historial_seguro(file):
     if file is None: return {}, {}
     try:
-        # Intentamos leer saltando las 9 filas de encabezado oficial
         df = pd.read_excel(file, skiprows=9) if file.name.endswith('.xlsx') else pd.read_csv(file, skiprows=9)
         df.columns = df.columns.str.strip().str.upper()
         h_cont, h_est = {}, {}
@@ -111,4 +110,43 @@ def generar_cuadro_maestro(mes, ano, h_cont, h_est, sugerencias):
                 df.at[p, dia_s] = req
                 if any(t in req for t in ['C', 'N']) and 'P' not in req: 
                     total_acu[p] += 1
-                    if any(t
+                    if any(t in req for t in TURNOS_ALTA): c1_acu[p] += 1
+                if 'N' in req: ult_n[p] = d
+
+        # Reparto
+        t_hoy = ['N1', 'N2', 'C1', 'C2', 'C3', 'C4']
+        if not es_f: t_hoy += (['C5', 'C6'] if wd < 5 else ['C5'])
+
+        for t in t_hoy:
+            if (df[dia_s] == t).any() and t not in ['C1', 'C2']: continue
+            disp = [p for p in PERSONAL_OFICIAL if df.at[p, dia_s] == "" and consec[p] < 3]
+            
+            if 'N' in t:
+                disp = [p for p in disp if (d - ult_n[p]) > 2] # Anti NP-N
+                if disp:
+                    disp.sort(key=lambda x: total_acu[x])
+                    el = disp[0]
+                    df.at[el, dia_s], total_acu[el], ult_n[el], consec[el] = t, total_acu[el]+1, d, consec[el]+1
+            elif t == 'C1':
+                if d > 1: disp = [p for p in disp if str(df.at[p, str(d-1)]) != 'C1']
+                if disp:
+                    disp.sort(key=lambda x: (c1_acu[x], total_acu[x]))
+                    el = disp[0]
+                    df.at[el, dia_s], c1_acu[el], total_acu[el], consec[el] = t, c1_acu[el]+1, total_acu[el]+1, consec[el]+1
+            else:
+                if disp:
+                    disp.sort(key=lambda x: total_acu[x])
+                    el = disp[0]
+                    df.at[el, dia_s], total_acu[el], consec[el] = t, total_acu[el]+1, consec[el]+1
+
+    df['TOTAL MES'] = df.apply(lambda r: sum(1 for x in r if any(t in str(x) for t in ['C', 'N']) and 'P' not in str(x)), axis=1)
+    df['NÓMINA (21-20)'] = df.apply(lambda r: h_cont.get(r.name, {}).get('total', 0) + sum(1 for d in range(1, 21) if any(t in str(r[str(d)]) for t in ['C', 'N']) and 'P' not in str(r[str(d)])), axis=1)
+    return df.replace("", "D")
+
+# --- 4. INTERFAZ ---
+st.title("🏥 Optimizador de Turnos - Instrumentación")
+
+with st.sidebar:
+    st.header("1. Datos de Entrada")
+    archivo = st.file_uploader("Subir Historial Mes Pasado", type=['xlsx', 'csv'])
+    link_sheet = st.text_input("Link de Sugerencias (Google Sheets):", "
