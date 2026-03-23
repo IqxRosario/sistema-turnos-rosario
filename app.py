@@ -63,7 +63,6 @@ def procesar_sugerencias(link):
     return sugerencias
 
 def procesar_configuracion(link):
-    """Lee la hoja de Google Sheets con los Libres Fijos de cada persona"""
     libres_fijos = {p: [] for p in INTEGRANTES}
     if not link: return libres_fijos
     try:
@@ -77,7 +76,6 @@ def procesar_configuracion(link):
             dias_str = str(r.get('DIAS_LIBRES',''))
             
             if nom in INTEGRANTES and dias_str and dias_str.lower() != 'nan':
-                # Convierte "0, 1, 5" en una lista de números [0, 1, 5]
                 libres_fijos[nom] = [int(x.strip()) for x in dias_str.split(',') if x.strip().isdigit()]
     except Exception as e: st.sidebar.warning("No se pudo leer la Configuración.")
     return libres_fijos
@@ -140,17 +138,15 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                     if es_finde_o_festivo: finde_totales[p] += 1
                     if turno_limpio == 'N': noches_totales[p] += 1
 
-        # 2. LIBRES FIJOS (LEÍDOS DESDE GOOGLE SHEETS)
+        # 2. LIBRES FIJOS
         for p in INTEGRANTES:
             if df.at[p, ds] == "" and wd in config_dict.get(p, []):
-                # Excepción: Juan Camilo los jueves (wd=3) puede hacer turno si se necesita, 
-                # pero por defecto se asume Libre si no pidió turno en sugerencias.
                 if p == "JUAN CAMILO PEREZ" and wd == 3 and cuota_c > 0:
-                    pass # Se deja disponible por si hace falta para salvar el día
+                    pass 
                 else:
                     df.at[p, ds] = "L"
 
-        # 3. ASIGNACIONES FIJAS BLINDADAS (Jhon y Angie)
+        # 3. ASIGNACIONES FIJAS
         if wd == 1 and df.at["JHON RIOS", ds] == "" and cuota_n > 0: 
             df.at["JHON RIOS", ds] = "N"
             cuota_n -= 1
@@ -165,11 +161,10 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
         # 4. REPARTIR NOCHES
         for _ in range(max(0, cuota_n)):
             disp_noches = [p for p in INTEGRANTES if df.at[p, ds] == "" and not necesita_descanso(p)]
-            disp_noches = [p for p in disp_noches if 'N' not in turno_en_dia(p, d-2)] # Anti N-P-N
+            disp_noches = [p for p in disp_noches if 'N' not in turno_en_dia(p, d-2)] 
 
             if d < dias_mes:
                 m_wd = (wd + 1) % 7
-                # EL ESCUDO ANTI-POSTURNO: Si mañana es su día libre fijo, NO puede hacer noche hoy
                 disp_noches = [p for p in disp_noches if m_wd not in config_dict.get(p, [])]
 
             if not disp_noches: disp_noches = [p for p in INTEGRANTES if df.at[p, ds] == ""]
@@ -212,9 +207,14 @@ with st.sidebar:
     st.header("1. Empalme (Mes Anterior)")
     archivo_previo = st.file_uploader("Sube el Excel:", type=['xlsx', 'csv'])
     
-    st.header("2. Google Sheets")
+    st.header("2. Bases de Datos (Google Sheets)")
     link_sheet = st.text_input("Link Pestaña SUGERENCIAS:", "https://docs.google.com/spreadsheets/d/...")
+    if link_sheet.startswith("http"):
+        st.link_button("📝 Abrir Sugerencias", link_sheet, use_container_width=True)
+
     link_config = st.text_input("Link Pestaña CONFIGURACIÓN (Libres Fijos):", "https://docs.google.com/spreadsheets/d/...")
+    if link_config.startswith("http"):
+        st.link_button("⚙️ Abrir Configuración", link_config, use_container_width=True)
     
     st.header("3. Generación")
     ano_sel = st.number_input("Año", min_value=2024, max_value=2035, value=datetime.now().year)
