@@ -28,7 +28,6 @@ def aplicar_colores(v):
 
 # --- LECTORES DE DATOS EXTERNOS ---
 def procesar_historial_empalme(file):
-    """Extrae estrictamente los últimos 3 días del mes anterior para el empalme."""
     historial = {p: ["", "", ""] for p in INTEGRANTES} 
     if not file: return historial
     try:
@@ -47,7 +46,6 @@ def procesar_historial_empalme(file):
     return historial
 
 def procesar_sugerencias(link):
-    """Lee el Google Sheets de peticiones."""
     sugerencias = {p: {} for p in INTEGRANTES}
     if not link: return sugerencias
     try:
@@ -61,7 +59,7 @@ def procesar_sugerencias(link):
             if nom in INTEGRANTES and fecha and sol != 'NAN':
                 sugerencias[nom][fecha] = sol
     except Exception as e:
-        st.sidebar.warning("No se pudo leer el link de sugerencias. Verifica que sea público.")
+        st.sidebar.warning("No se pudo leer el link de sugerencias.")
     return sugerencias
 
 # --- MOTOR DE GENERACIÓN ---
@@ -73,7 +71,6 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
     noches_totales = {p: 0 for p in INTEGRANTES}
     finde_totales = {p: 0 for p in INTEGRANTES}
 
-    # Máquina del tiempo para empalmes
     def turno_en_dia(persona, dia_req):
         if dia_req > 0: return str(df.at[persona, str(dia_req)])
         else:
@@ -98,32 +95,27 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
 
         # 2. APLICAR REGLAS FIJAS, POSTURNOS Y SUGERENCIAS
         for p in INTEGRANTES:
-            # Posturno automático
             if 'N' in turno_en_dia(p, d-1): 
                 df.at[p, ds] = 'P'
                 continue
             
-            # Libres fijos inamovibles
             if wd == 0 and p in ["GERLIS DOMINGUEZ", "ZARIANA REYES"]: df.at[p, ds] = "L"
             if wd in [1, 2, 5] and p == "IVETTE VALENCIA": df.at[p, ds] = "L"
             if wd in [3, 4] and p == "GINELAP": df.at[p, ds] = "L"
             if wd == 3 and p in ["MARCELA CASTRO", "JUAN CAMILO PEREZ"]: df.at[p, ds] = "L"
             if wd == 1 and p == "JUAN CAMILO PEREZ": df.at[p, ds] = "L"
 
-            # Aplicar sugerencias del Google Sheets (siempre que el día esté vacío)
             req = sugerencias_dict.get(p, {}).get(ds)
             if req and df.at[p, ds] == "":
                 df.at[p, ds] = req
-                # Restar el turno de la "bolsa" del día si es que pidieron uno específico
                 if req in turnos_noche: turnos_noche.remove(req)
                 if req in turnos_dia: turnos_dia.remove(req)
-                # Sumar a sus contadores si pidieron trabajar
                 if any(t in req for t in ['C', 'N']) and 'P' not in req:
                     turnos_totales[p] += 1
                     if es_finde_o_festivo: finde_totales[p] += 1
                     if 'N' in req: noches_totales[p] += 1
 
-        # 3. ASIGNACIONES FIJAS DE TURNO (Que no vinieron por Sheets)
+        # 3. ASIGNACIONES FIJAS DE TURNO
         if wd == 1 and df.at["JHON RIOS", ds] == "":
             df.at["JHON RIOS", ds] = "N1"
             if "N1" in turnos_noche: turnos_noche.remove("N1")
@@ -152,7 +144,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
 
             if not disp_noches: disp_noches = [p for p in INTEGRANTES if df.at[p, ds] == ""]
             if disp_noches:
-                random.shuffle(disp_noches)
+                random.shuffle(disp_noches) # Desempate aleatorio
                 disp_noches.sort(key=lambda x: (noches_totales[x], turnos_totales[x]))
                 elegido = disp_noches[0]
                 df.at[elegido, ds] = t
@@ -160,13 +152,22 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
                 noches_totales[elegido] += 1
                 if es_finde_o_festivo: finde_totales[elegido] += 1
 
-        # 5. REPARTIR CORRIDOS
+        # 5. REPARTIR CORRIDOS (CON ROTACIÓN FORZADA)
         for t in turnos_dia:
             disp_dia = [p for p in INTEGRANTES if df.at[p, ds] == "" and not necesita_descanso(p)]
+            
+            # ---> REGLA NUEVA: Evitar que repita exactamente el mismo turno de ayer
+            disp_variada = [p for p in disp_dia if turno_en_dia(p, d-1) != t]
+            if disp_variada:
+                disp_dia = disp_variada # Usar la lista variada si hay opciones
+
             if not disp_dia: disp_dia = [p for p in INTEGRANTES if df.at[p, ds] == ""]
+            
             if disp_dia:
+                random.shuffle(disp_dia) # Desempate aleatorio para evitar bloques
                 if es_finde_o_festivo: disp_dia.sort(key=lambda x: (finde_totales[x], turnos_totales[x]))
                 else: disp_dia.sort(key=lambda x: turnos_totales[x])
+                
                 elegido = disp_dia[0]
                 df.at[elegido, ds] = t
                 turnos_totales[elegido] += 1
@@ -184,12 +185,11 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
     return df
 
 # --- INTERFAZ ---
-st.title("🏥 Cuadro de Instrumentación (Motor Simplificado)")
+st.title("🏥 Cuadro de Instrumentación (Rotación Dinámica)")
 
 with st.sidebar:
     st.header("1. Cargar Historial")
     archivo_previo = st.file_uploader("Sube el Excel del mes anterior para el empalme", type=['xlsx', 'csv'])
-    st.info("Leerá los últimos 3 días para calcular descansos y posturnos del día 1.")
     
     st.header("2. Peticiones de Turno")
     link_sheet = st.text_input("Link de Sugerencias (Google Sheets):", "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?gid=0#gid=0")
@@ -198,7 +198,7 @@ with st.sidebar:
     mes_sel = st.selectbox("Mes a Generar (2026)", range(1, 13), index=datetime.now().month-1)
 
 if st.button("🚀 GENERAR CUADRO DEL MES", type="primary"):
-    with st.spinner("Leyendo peticiones, empalme y balanceando cargas..."):
+    with st.spinner("Creando rotación sin repeticiones..."):
         historial_leido = procesar_historial_empalme(archivo_previo)
         sugerencias_leidas = procesar_sugerencias(link_sheet)
         
@@ -210,5 +210,4 @@ if st.button("🚀 GENERAR CUADRO DEL MES", type="primary"):
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             resultado.to_excel(writer, index=True)
-        st.download_button("📥 Descargar Excel", output.getvalue(), f"Turnos_{mes_sel}_2026.xlsx")
-        
+        st.download_button("📥 Descargar Excel", output.getvalue(), f"Turnos_Rotados_{mes_sel}_2026.xlsx")
