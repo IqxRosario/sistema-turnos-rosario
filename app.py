@@ -3,9 +3,10 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import calendar
+import random
 import io
 
-# --- 1. IDENTIDAD DEL GRUPO ---
+# --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Gestor de Instrumentación", layout="wide")
 
 INTEGRANTES = [
@@ -15,130 +16,141 @@ INTEGRANTES = [
     "KELLY JOHANA JURADO", "JOAN SEBASTIAN AGUDELO"
 ]
 
-# Definición de valor de turnos para rotación justa
-TURNOS_VALIOSOS = ['C1', 'C2', 'C3', 'C4', 'N1'] 
-
-# --- 2. FUNCIONES DE LÓGICA ---
-def procesar_historial(file):
-    """Extrae el estado del 21 al 31 para empalmar y contar nómina"""
-    if not file: return {}, {}
-    try:
-        df = pd.read_excel(file, skiprows=9) if file.name.endswith('.xlsx') else pd.read_csv(file, skiprows=9)
-        df.columns = df.columns.str.strip().str.upper()
-        h_nomina, h_salud = {}, {}
-        for _, r in df.iterrows():
-            nom = str(r.get('NOMBRE','')).strip().upper()
-            if "GINELAP" in nom: nom = "GINELAP"
-            if nom not in INTEGRANTES: continue
-            
-            # Conteo para nómina (Periodo 21 al 31 del mes pasado)
-            cols_21_31 = [c for c in df.columns if str(c).isdigit() and int(c) >= 21]
-            h_nomina[nom] = sum(1 for c in cols_21_31 if any(t in str(r[c]).upper() for t in TURNOS_VALIOSOS) and 'P' not in str(r[c]).upper())
-            
-            # Estado físico para el día 1
-            ult_dias = [str(r[c]).upper() for c in [x for x in df.columns if str(x).isdigit()][-3:]]
-            h_salud[nom] = {'noche_ayer': 'N' in ult_dias[-1], 'consecutivos': sum(1 for x in ult_dias if any(t in x for t in ['C','N']) and 'P' not in x)}
-        return h_nomina, h_salud
-    except: return {}, {}
+# Festivos Colombia 2026
+def es_festivo(dia, mes):
+    festivos_2026 = {1: [1, 12], 3: [23], 4: [2, 3], 5: [1, 18], 6: [8, 15, 29], 7: [20], 8: [7, 17], 10: [12], 11: [2, 16], 12: [8, 25]}
+    return dia in festivos_2026.get(mes, [])
 
 def aplicar_colores(v):
-    if v in ['L','D']: return 'background-color: #d9ead3' # Verde suave
-    if v == 'P': return 'background-color: #f4cccc'      # Rojo suave
-    if 'N' in str(v): return 'background-color: #cfe2f3' # Azul suave
-    if any(t in str(v) for t in ['C1','C2','C3','C4']): return 'background-color: #fff2cc' # Amarillo
+    if v in ['L', 'D']: return 'background-color: #d9ead3' # Verde
+    if v == 'P': return 'background-color: #f4cccc'      # Rojo
+    if 'N' in str(v): return 'background-color: #cfe2f3' # Azul
+    if 'C' in str(v): return 'background-color: #fff2cc' # Amarillo
     return ''
 
-# --- 3. EL MOTOR DE EQUIDAD Y ROTACIÓN ---
-def generar_cuadro(mes, ano, h_nom, h_sal, sug_link):
+# --- MOTOR DE GENERACIÓN ---
+def generar_cuadro_equitativo(mes, ano):
     dias_mes = calendar.monthrange(ano, mes)[1]
-    festivos = {1:[1,6], 3:[23], 4:[2,3,16,17], 5:[1,18], 6:[8,15,29], 7:[20], 8:[7,17], 10:[12], 11:[2,16], 12:[8,25]}.get(mes, [])
-    
     df = pd.DataFrame(index=INTEGRANTES, columns=[str(d) for d in range(1, dias_mes + 1)]).fillna("")
     
-    # Contadores vivos
-    conteo_21_20 = {p: h_nom.get(p, 0) for p in INTEGRANTES}
-    u_noche, consec = {p: -5 for p in INTEGRANTES}, {p: h_sal.get(p,{}).get('consecutivos', 0) for p in INTEGRANTES}
+    # Contadores para equidad
+    turnos_totales = {p: 0 for p in INTEGRANTES}
+    noches_totales = {p: 0 for p in INTEGRANTES}
+    finde_totales = {p: 0 for p in INTEGRANTES}
 
     for d in range(1, dias_mes + 1):
-        ds, fecha = str(d), datetime(ano, mes, d)
+        ds = str(d)
+        fecha = datetime(ano, mes, d)
         wd = fecha.weekday()
-        es_festivo = (d in festivos or wd == 6)
-        
-        if d == 21: # Reinicio de periodo de facturación
-            conteo_21_20 = {p: 0 for p in INTEGRANTES}
+        es_finde_o_festivo = wd >= 5 or es_festivo(d, mes)
 
-        # A. REGLAS DE ORO (SALUD Y FIJOS)
+        # 1. APLICAR REGLAS FIJAS DE DESCANSO Y POSTURNOS
         for p in INTEGRANTES:
-            # Empalme Día 1
-            if d == 1 and h_sal.get(p,{}).get('noche_ayer'): df.at[p, '1'], u_noche[p], consec[p] = 'P', 0, 0
-            # Posturnos automáticos
-            if d > 1 and 'N' in str(df.at[p, str(d-1)]): df.at[p, ds], consec[p] = 'P', 0
+            # Posturno automático si ayer hizo Noche
+            if d > 1 and 'N' in str(df.at[p, str(d-1)]): 
+                df.at[p, ds] = 'P'
+                continue
             
-            # Restricciones Fijas de Disponibilidad
+            # Reglas Fijas del Grupo
             if wd == 0 and p in ["GERLIS DOMINGUEZ", "ZARIANA REYES"]: df.at[p, ds] = "L"
             if wd == 1 and p == "IVETTE VALENCIA": df.at[p, ds] = "L"
-            if wd == 2 and p == "ANGIE BERNAL": df.at[p, ds] = "C6"
-            if wd == 3 and p in ["MARCELA CASTRO", "JUAN CAMILO PEREZ"]: df.at[p, ds] = "L"
+            if wd == 2 and p == "IVETTE VALENCIA": df.at[p, ds] = "L"
+            if wd == 5 and p == "IVETTE VALENCIA": df.at[p, ds] = "L"
             if wd in [3, 4] and p == "GINELAP": df.at[p, ds] = "L"
-            if wd in [0, 5] and p == "IVETTE VALENCIA": df.at[p, ds] = "L"
+            if wd == 3 and p in ["MARCELA CASTRO", "JUAN CAMILO PEREZ"]: df.at[p, ds] = "L"
+            if wd == 1 and p == "JUAN CAMILO PEREZ": df.at[p, ds] = "L"
 
-        # B. REPARTO DE TURNOS VALIOSOS (Equidad y Rotación)
-        turnos_dia = ['N1', 'C1', 'C2', 'C3', 'C4']
-        for t in turnos_dia:
-            if (df[ds] == t).any() and t not in ['C1', 'C2']: continue
+        # 2. DEFINIR NECESIDADES DEL DÍA
+        turnos_noche = ['N1', 'N2']
+        if es_festivo(d, mes) or wd == 6: # Domingo o Festivo
+            turnos_dia = ['C1', 'C2']
+        elif wd == 5: # Sábado
+            turnos_dia = ['C1', 'C2', 'C3', 'C4', 'C5']
+        else: # Lunes a Viernes
+            turnos_dia = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6']
+
+        # 3. ASIGNACIONES FIJAS DE TURNO
+        if wd == 1 and df.at["JHON RIOS", ds] == "": # Martes
+            df.at["JHON RIOS", ds] = "N1"
+            turnos_noche.remove("N1")
+            turnos_totales["JHON RIOS"] += 1
+            noches_totales["JHON RIOS"] += 1
+
+        if wd == 2 and df.at["ANGIE BERNAL", ds] == "": # Miércoles
+            if "C6" in turnos_dia:
+                df.at["ANGIE BERNAL", ds] = "C6"
+                turnos_dia.remove("C6")
+                turnos_totales["ANGIE BERNAL"] += 1
+
+        # 4. REPARTIR NOCHES RESTANTES (Priorizando a quien tiene menos noches)
+        for t in turnos_noche:
+            disp_noches = [p for p in INTEGRANTES if df.at[p, ds] == ""]
             
-            # Buscar instrumentadores disponibles
-            disp = []
-            for p in INTEGRANTES:
-                if df.at[p, ds] == "" and consec[p] < 3:
-                    if 'N' in t and (d - u_noche[p]) <= 2: continue # Anti N-P-N
-                    if t == 'C1' and d > 1 and str(df.at[p, str(d-1)]) == 'C1': continue # Anti C1-C1
-                    disp.append(p)
-            
-            if disp:
-                # Transparencia: Se le da al que menos turnos valiosos lleva en el periodo 21-20
-                disp.sort(key=lambda x: conteo_21_20[x])
-                elegido = disp[0]
+            # Evitar asignar Noche si mañana tienen una "L" fija que impide Posturno
+            if d < dias_mes:
+                manana_wd = (wd + 1) % 7
+                disp_noches = [p for p in disp_noches if not (
+                    (manana_wd == 0 and p in ["GERLIS DOMINGUEZ", "ZARIANA REYES"]) or
+                    (manana_wd == 1 and p == "IVETTE VALENCIA") or
+                    (manana_wd == 2 and p == "IVETTE VALENCIA") or
+                    (manana_wd == 5 and p == "IVETTE VALENCIA") or
+                    (manana_wd in [3, 4] and p == "GINELAP") or
+                    (manana_wd == 3 and p in ["MARCELA CASTRO", "JUAN CAMILO PEREZ"]) or
+                    (manana_wd == 1 and p == "JUAN CAMILO PEREZ")
+                )]
+
+            if disp_noches:
+                # Mezclar para romper patrones, luego ordenar por quien tiene menos noches
+                random.shuffle(disp_noches)
+                disp_noches.sort(key=lambda x: (noches_totales[x], turnos_totales[x]))
+                elegido = disp_noches[0]
                 df.at[elegido, ds] = t
-                conteo_21_20[elegido] += 1
-                consec[elegido] += 1
-                if 'N' in t: u_noche[elegido] = d
+                turnos_totales[elegido] += 1
+                noches_totales[elegido] += 1
+                if es_finde_o_festivo: finde_totales[elegido] += 1
 
-        # C. RELLENO DE TURNOS RESTANTES (C5, C6, N2)
-        t_relleno = (['N2', 'C5', 'C6'] if not es_festivo and wd < 5 else (['N2', 'C5'] if not es_festivo else ['N2']))
-        for t in t_relleno:
-            if (df[ds] == t).any(): continue
-            disp = [p for p in INTEGRANTES if df.at[p, ds] == "" and consec[p] < 3]
-            if disp:
-                disp.sort(key=lambda x: conteo_21_20[x])
-                el = disp[0]
-                df.at[el, ds], consec[el] = t, consec[el] + 1
-                if 'N' in t: u_noche[el] = d
+        # 5. REPARTIR CORRIDOS (Priorizando a quien tiene menos turnos totales)
+        for t in turnos_dia:
+            disp_dia = [p for p in INTEGRANTES if df.at[p, ds] == ""]
+            
+            # Si es fin de semana, intentar no pasar de 4 días de fin de semana al mes (2 findes)
+            if es_finde_o_festivo:
+                disp_dia.sort(key=lambda x: (finde_totales[x], turnos_totales[x]))
+            else:
+                disp_dia.sort(key=lambda x: turnos_totales[x])
 
-    # Totales de auditoría
-    df['TOTAL 21-20'] = df.apply(lambda r: h_nom.get(r.name, 0) + sum(1 for d_i in range(1, 21) if any(t in str(r[str(d_i)]) for t in TURNOS_VALIOSOS)), axis=1)
-    return df.replace("", "D")
+            if disp_dia:
+                elegido = disp_dia[0]
+                df.at[elegido, ds] = t
+                turnos_totales[elegido] += 1
+                if es_finde_o_festivo: finde_totales[elegido] += 1
 
-# --- 4. INTERFAZ PARA EL EQUIPO ---
-st.title("🏥 Cuadro Automático de Instrumentación")
-st.markdown("Generación de turnos basada en **Equidad (21-20)** y **Salud Ocupacional**.")
+        # 6. RELLENAR CON DESCANSO (D)
+        for p in INTEGRANTES:
+            if df.at[p, ds] == "":
+                df.at[p, ds] = "D"
 
-with st.sidebar:
-    st.header("Entradas del Sistema")
-    archivo = st.file_uploader("Historial Mes Pasado", type=['xlsx', 'csv'])
-    mes_sel = st.selectbox("Mes a Generar", range(1, 13), index=datetime.now().month-1)
-    st.info("El sistema respeta automáticamente las L de Ivette, Ginelap, Gerlis y Zariana.")
-
-if st.button("🚀 GENERAR CUADRO DEL MES", type="primary", use_container_width=True):
-    h_nom, h_sal = procesar_historial(archivo)
-    resultado = generar_cuadro(mes_sel, 2026, h_nom, h_sal, "")
+    # AGREGAR COLUMNAS DE AUDITORÍA
+    df['TOTAL TURNOS'] = df.apply(lambda r: sum(1 for c in df.columns if any(t in str(r[c]) for t in ['C', 'N'])), axis=1)
+    df['TOTAL NOCHES'] = df.apply(lambda r: sum(1 for c in df.columns if 'N' in str(r[c])), axis=1)
+    df['FINES DE SEMANA'] = df.apply(lambda r: finde_totales[r.name], axis=1)
     
-    # Mostrar Cuadro
-    cols_dias = [c for c in resultado.columns if c.isdigit()]
-    st.dataframe(resultado.style.applymap(aplicar_colores, subset=cols_dias), use_container_width=True)
-    
-    # Descargar
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        resultado.to_excel(writer, index=True)
-    st.download_button("📥 Descargar Excel para el Grupo", output.getvalue(), f"Turnos_Instrumentacion_Mes_{mes_sel}.xlsx", use_container_width=True)
+    return df
+
+# --- INTERFAZ ---
+st.title("🏥 Cuadro de Instrumentación (Equidad Simple)")
+st.markdown("Generación automática basándose en **conteo total de turnos, noches y fines de semana.**")
+
+mes_sel = st.sidebar.selectbox("Mes a Generar (2026)", range(1, 13), index=datetime.now().month-1)
+
+if st.button("🚀 GENERAR CUADRO DEL MES", type="primary"):
+    with st.spinner("Balanceando cargas..."):
+        resultado = generar_cuadro_equitativo(mes_sel, 2026)
+        
+        cols_dias = [str(d) for d in range(1, calendar.monthrange(2026, mes_sel)[1] + 1)]
+        st.dataframe(resultado.style.applymap(aplicar_colores, subset=cols_dias), use_container_width=True)
+        
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            resultado.to_excel(writer, index=True)
+        st.download_button("📥 Descargar Excel", output.getvalue(), f"Turnos_{mes_sel}_2026.xlsx")
