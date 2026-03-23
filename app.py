@@ -26,23 +26,33 @@ def aplicar_colores(v):
     if 'C' in str(v): return 'background-color: #fff2cc' 
     return ''
 
-# --- LECTORES DE DATOS ---
+# --- LECTORES DE DATOS (AHORA INTELIGENTES) ---
 def procesar_historial_empalme(file):
     historial = {p: ["", "", ""] for p in INTEGRANTES} 
     if not file: return historial
     try:
-        df_hist = pd.read_excel(file, skiprows=9) if file.name.endswith('.xlsx') else pd.read_csv(file, skiprows=9)
-        df_hist.columns = df_hist.columns.str.strip().str.upper()
-        cols_dias = [c for c in df_hist.columns if str(c).isdigit()]
+        # Intenta leer normalmente (para archivos generados por la app)
+        df = pd.read_excel(file) if file.name.endswith('.xlsx') else pd.read_csv(file)
+        
+        # Si no detecta números de días en las columnas, asume que es la plantilla vieja y salta 9 filas
+        if not any(str(c).isdigit() for c in df.columns):
+            df = pd.read_excel(file, skiprows=9) if file.name.endswith('.xlsx') else pd.read_csv(file, skiprows=9)
+            
+        df.columns = df.columns.astype(str).str.strip().str.upper()
+        
+        # Buscar la columna donde están los nombres (en los archivos generados se llama UNNAMED: 0)
+        col_nombre = next((c for c in df.columns if 'NOMBRE' in c or 'UNNAMED: 0' in c), None)
+        
+        cols_dias = [c for c in df.columns if c.isdigit()]
         if len(cols_dias) >= 3:
-            ultimas_3 = cols_dias[-3:]
-            for _, r in df_hist.iterrows():
-                nom = str(r.get('NOMBRE','')).strip().upper()
+            ultimas_3 = sorted(cols_dias, key=int)[-3:] # Asegura que tome ej. 29, 30, 31
+            for _, r in df.iterrows():
+                nom = str(r[col_nombre]).strip().upper() if col_nombre else str(r.name).strip().upper()
                 if "GINELAP" in nom: nom = "GINELAP"
                 if nom in INTEGRANTES:
                     historial[nom] = [str(r[c]).upper() for c in ultimas_3]
     except Exception as e:
-        st.sidebar.error("Error leyendo el historial de empalme.")
+        st.sidebar.error(f"Error leyendo el historial de empalme: {e}")
     return historial
 
 def procesar_sugerencias(link):
@@ -87,14 +97,16 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
         def racha_actual(persona):
             streak = 0
             for past_d in range(d - 1, d - 10, -1):
-                if any(t in turno_en_dia(persona, past_d) for t in ['C', 'N']): streak += 1
+                t_pasado = turno_en_dia(persona, past_d)
+                if any(t in t_pasado for t in ['C', 'N']) and 'P' not in t_pasado: 
+                    streak += 1
                 else: break
             return streak
 
         def necesita_descanso(persona):
             return racha_actual(persona) >= 3
 
-        # 1. DEFINIR CUOTAS DIARIAS (Cantidades, ya no listas de nombres)
+        # 1. DEFINIR CUOTAS DIARIAS
         cuota_n = 2
         if es_festivo(d, mes) or wd == 6: cuota_c = 2
         elif wd == 5: cuota_c = 5
@@ -102,7 +114,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
 
         # 2. APLICAR REGLAS Y SUGERENCIAS
         for p in INTEGRANTES:
-            # Posturno
+            # Posturno Sagrado
             if 'N' in turno_en_dia(p, d-1): 
                 df.at[p, ds] = 'P'
                 continue
@@ -110,7 +122,6 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
             # Peticiones de Google Sheets
             req = sugerencias_dict.get(p, {}).get(ds)
             if req:
-                # Limpiamos el requerimiento para que sea C o N puro
                 turno_limpio = req
                 if 'C' in req and 'P' not in req: turno_limpio = 'C'
                 elif 'N' in req and 'P' not in req: turno_limpio = 'N'
@@ -133,13 +144,13 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
             if wd == 1 and p == "JUAN CAMILO PEREZ": df.at[p, ds] = "L"
 
         # 3. ASIGNACIONES FIJAS
-        if wd == 1 and df.at["JHON RIOS", ds] == "" and cuota_n > 0: # Martes
+        if wd == 1 and df.at["JHON RIOS", ds] == "" and cuota_n > 0: 
             df.at["JHON RIOS", ds] = "N"
             cuota_n -= 1
             turnos_totales["JHON RIOS"] += 1
             noches_totales["JHON RIOS"] += 1
 
-        if wd == 2 and df.at["ANGIE BERNAL", ds] == "" and cuota_c > 0: # Miércoles
+        if wd == 2 and df.at["ANGIE BERNAL", ds] == "" and cuota_c > 0: 
             df.at["ANGIE BERNAL", ds] = "C"
             cuota_c -= 1
             turnos_totales["ANGIE BERNAL"] += 1
@@ -194,7 +205,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
     return df
 
 # --- INTERFAZ ---
-st.title("🏥 Cuadro de Instrumentación (Modo C/N Puro)")
+st.title("🏥 Cuadro de Instrumentación (Modo C/N Puro con Empalme)")
 
 with st.sidebar:
     st.header("1. Cargar Historial")
