@@ -4,6 +4,7 @@ from datetime import datetime
 import calendar
 import random
 import io
+import holidays
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Gestor de Instrumentación", layout="wide")
@@ -15,15 +16,17 @@ INTEGRANTES = [
     "KELLY JOHANA JURADO", "JOAN SEBASTIAN AGUDELO"
 ]
 
-def es_festivo(dia, mes):
-    festivos_2026 = {1: [1, 12], 3: [23], 4: [2, 3], 5: [1, 18], 6: [8, 15, 29], 7: [20], 8: [7, 17], 10: [12], 11: [2, 16], 12: [8, 25]}
-    return dia in festivos_2026.get(mes, [])
+# --- DETECTOR AUTOMÁTICO DE FESTIVOS COLOMBIA ---
+def es_festivo(dia, mes, ano):
+    co_holidays = holidays.CO(years=ano)
+    fecha_actual = datetime(ano, mes, dia).date()
+    return fecha_actual in co_holidays
 
 def aplicar_colores(v):
-    if v in ['L', 'D']: return 'background-color: #d9ead3' 
-    if v == 'P': return 'background-color: #f4cccc'      
-    if 'N' in str(v): return 'background-color: #cfe2f3' 
-    if 'C' in str(v): return 'background-color: #fff2cc' 
+    if v in ['L', 'D']: return 'background-color: #d9ead3; color: #000000;' 
+    if v == 'P': return 'background-color: #f4cccc; color: #000000;'      
+    if 'N' in str(v): return 'background-color: #cfe2f3; color: #000000;' 
+    if 'C' in str(v): return 'background-color: #fff2cc; color: #000000;' 
     return ''
 
 # --- LECTORES DE DATOS ---
@@ -46,7 +49,7 @@ def procesar_historial_empalme(file):
                 if nom in INTEGRANTES:
                     historial[nom] = [str(r[c]).upper() for c in ultimas_3]
     except Exception as e:
-        st.sidebar.error("Error leyendo el historial de empalme.")
+        st.sidebar.error("Error leyendo el historial de empalme. Verifica el archivo.")
     return historial
 
 def procesar_sugerencias(link):
@@ -63,7 +66,7 @@ def procesar_sugerencias(link):
             if nom in INTEGRANTES and fecha and sol != 'NAN':
                 sugerencias[nom][fecha] = sol
     except Exception as e:
-        st.sidebar.warning("No se pudo leer el link de sugerencias.")
+        st.sidebar.warning("No se pudo leer el link de sugerencias. Asegúrate de que sea público.")
     return sugerencias
 
 # --- MOTOR DE GENERACIÓN ---
@@ -86,7 +89,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
     for d in range(1, dias_mes + 1):
         ds = str(d)
         wd = datetime(ano, mes, d).weekday()
-        es_finde_o_festivo = wd >= 5 or es_festivo(d, mes)
+        es_finde_o_festivo = wd >= 5 or es_festivo(d, mes, ano)
 
         def racha_actual(persona):
             streak = 0
@@ -102,7 +105,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
 
         # 1. DEFINIR CUOTAS DIARIAS
         cuota_n = 2
-        if es_festivo(d, mes) or wd == 6: cuota_c = 2
+        if es_festivo(d, mes, ano) or wd == 6: cuota_c = 2
         elif wd == 5: cuota_c = 5
         else: cuota_c = 6
 
@@ -135,7 +138,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
             if wd in [0, 1, 5] and p == "IVETTE VALENCIA": df.at[p, ds] = "L"
             if wd in [3, 4] and p in ["GINELAP"]: df.at[p, ds] = "L"
             if wd == 3 and p in ["MARCELA CASTRO"]: df.at[p, ds] = "L" 
-            if wd == 1 and p == "JUAN CAMILO PEREZ": df.at[p, ds] = "L" # El jueves puede hacer C para liberar presión
+            if wd == 1 and p == "JUAN CAMILO PEREZ": df.at[p, ds] = "L" 
 
         # 3. ASIGNACIONES FIJAS
         if wd == 1 and df.at["JHON RIOS", ds] == "" and cuota_n > 0: 
@@ -169,7 +172,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
             
             if disp_noches:
                 random.shuffle(disp_noches)
-                # EQUIDAD TOTAL PARA NOCHES: Quien tenga menos noches va primero, ignorando la fatiga.
+                # EQUIDAD TOTAL PARA NOCHES
                 disp_noches.sort(key=lambda x: (noches_totales[x], racha_actual(x) >= 2, turnos_totales[x]))
                 elegido = disp_noches[0]
                 df.at[elegido, ds] = "N"
@@ -186,7 +189,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
                 
             if disp_dia:
                 random.shuffle(disp_dia)
-                # EL SECRETO ANTI 4 DIAS: Se prioriza fuertemente a los que llevan 0 o 1 dia trabajado (racha >= 2 es False)
+                # ESCUDO ANTIFATIGA: Prioriza a los que llevan 0 o 1 día trabajado
                 if es_finde_o_festivo: 
                     disp_dia.sort(key=lambda x: (racha_actual(x) >= 2, finde_totales[x], turnos_totales[x]))
                 else: 
@@ -202,35 +205,37 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
             if df.at[p, ds] == "":
                 df.at[p, ds] = "D"
 
+    # AGREGAR COLUMNAS DE AUDITORÍA
     df['TOTAL TURNOS'] = df.apply(lambda r: sum(1 for c in df.columns if any(t in str(r[c]) for t in ['C', 'N'])), axis=1)
     df['TOTAL NOCHES'] = df.apply(lambda r: noches_totales[r.name], axis=1)
     df['FINES DE SEMANA'] = df.apply(lambda r: finde_totales[r.name], axis=1)
     return df
 
 # --- INTERFAZ ---
-st.title("🏥 Cuadro de Instrumentación (Motor de Precisión)")
+st.title("🏥 Cuadro de Instrumentación (Producción)")
 
 with st.sidebar:
-    st.header("1. Cargar Historial")
-    archivo_previo = st.file_uploader("Sube el Excel del mes anterior para el empalme", type=['xlsx', 'csv'])
+    st.header("1. Empalme (Historial)")
+    archivo_previo = st.file_uploader("Sube el Excel del mes anterior:", type=['xlsx', 'csv'])
     
-    st.header("2. Peticiones de Turno")
-    link_sheet = st.text_input("Link de Sugerencias (Google Sheets):", "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?gid=0#gid=0")
+    st.header("2. Peticiones (Google Sheets)")
+    link_sheet = st.text_input("Enlace público:", "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?gid=0#gid=0")
     
-    st.header("3. Configurar Mes")
-    mes_sel = st.selectbox("Mes a Generar (2026)", range(1, 13), index=datetime.now().month-1)
+    st.header("3. Generación")
+    ano_sel = st.number_input("Año", min_value=2024, max_value=2035, value=datetime.now().year)
+    mes_sel = st.selectbox("Mes", range(1, 13), index=datetime.now().month-1)
 
-if st.button("🚀 GENERAR CUADRO DEL MES", type="primary"):
-    with st.spinner("Asignando turnos y blindando descansos..."):
+if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
+    with st.spinner("Balanceando cargas y calculando festivos..."):
         historial_leido = procesar_historial_empalme(archivo_previo)
         sugerencias_leidas = procesar_sugerencias(link_sheet)
         
-        resultado = generar_cuadro_equitativo(mes_sel, 2026, historial_leido, sugerencias_leidas)
+        resultado = generar_cuadro_equitativo(mes_sel, ano_sel, historial_leido, sugerencias_leidas)
         
-        cols_dias = [str(d) for d in range(1, calendar.monthrange(2026, mes_sel)[1] + 1)]
+        cols_dias = [str(d) for d in range(1, calendar.monthrange(ano_sel, mes_sel)[1] + 1)]
         st.dataframe(resultado.style.applymap(aplicar_colores, subset=cols_dias), use_container_width=True)
         
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             resultado.to_excel(writer, index=True)
-        st.download_button("📥 Descargar Excel", output.getvalue(), f"Turnos_Completos_{mes_sel}_2026.xlsx")
+        st.download_button("📥 Descargar Nómina Excel", output.getvalue(), f"Turnos_Completos_{mes_sel}_{ano_sel}.xlsx", use_container_width=True)
