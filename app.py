@@ -26,7 +26,7 @@ def aplicar_colores(v):
     if 'C' in str(v): return 'background-color: #fff2cc' 
     return ''
 
-# --- LECTORES DE DATOS EXTERNOS ---
+# --- LECTORES DE DATOS ---
 def procesar_historial_empalme(file):
     historial = {p: ["", "", ""] for p in INTEGRANTES} 
     if not file: return historial
@@ -42,7 +42,7 @@ def procesar_historial_empalme(file):
                 if nom in INTEGRANTES:
                     historial[nom] = [str(r[c]).upper() for c in ultimas_3]
     except Exception as e:
-        st.sidebar.error(f"Error leyendo el historial: {e}")
+        st.sidebar.error("Error leyendo el historial de empalme.")
     return historial
 
 def procesar_sugerencias(link):
@@ -84,51 +84,68 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
         wd = datetime(ano, mes, d).weekday()
         es_finde_o_festivo = wd >= 5 or es_festivo(d, mes)
 
+        def racha_actual(persona):
+            streak = 0
+            for past_d in range(d - 1, d - 10, -1):
+                if any(t in turno_en_dia(persona, past_d) for t in ['C', 'N']): streak += 1
+                else: break
+            return streak
+
         def necesita_descanso(persona):
-            return all(any(t in turno_en_dia(persona, past_d) for t in ['C', 'N']) for past_d in range(d-3, d))
+            return racha_actual(persona) >= 3
 
-        # 1. DEFINIR NECESIDADES DEL DÍA
-        turnos_noche = ['N1', 'N2']
-        if es_festivo(d, mes) or wd == 6: turnos_dia = ['C1', 'C2']
-        elif wd == 5: turnos_dia = ['C1', 'C2', 'C3', 'C4', 'C5']
-        else: turnos_dia = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6']
+        # 1. DEFINIR CUOTAS DIARIAS (Cantidades, ya no listas de nombres)
+        cuota_n = 2
+        if es_festivo(d, mes) or wd == 6: cuota_c = 2
+        elif wd == 5: cuota_c = 5
+        else: cuota_c = 6
 
-        # 2. APLICAR REGLAS FIJAS, POSTURNOS Y SUGERENCIAS
+        # 2. APLICAR REGLAS Y SUGERENCIAS
         for p in INTEGRANTES:
+            # Posturno
             if 'N' in turno_en_dia(p, d-1): 
                 df.at[p, ds] = 'P'
                 continue
             
+            # Peticiones de Google Sheets
+            req = sugerencias_dict.get(p, {}).get(ds)
+            if req:
+                # Limpiamos el requerimiento para que sea C o N puro
+                turno_limpio = req
+                if 'C' in req and 'P' not in req: turno_limpio = 'C'
+                elif 'N' in req and 'P' not in req: turno_limpio = 'N'
+                
+                df.at[p, ds] = turno_limpio
+                if turno_limpio == 'N': cuota_n -= 1
+                if turno_limpio == 'C': cuota_c -= 1
+                
+                if turno_limpio in ['C', 'N']:
+                    turnos_totales[p] += 1
+                    if es_finde_o_festivo: finde_totales[p] += 1
+                    if turno_limpio == 'N': noches_totales[p] += 1
+                continue
+                
+            # Libres fijos
             if wd == 0 and p in ["GERLIS DOMINGUEZ", "ZARIANA REYES"]: df.at[p, ds] = "L"
-            if wd in [1, 2, 5] and p == "IVETTE VALENCIA": df.at[p, ds] = "L"
+            if wd in [0, 1, 5] and p == "IVETTE VALENCIA": df.at[p, ds] = "L"
             if wd in [3, 4] and p == "GINELAP": df.at[p, ds] = "L"
             if wd == 3 and p in ["MARCELA CASTRO", "JUAN CAMILO PEREZ"]: df.at[p, ds] = "L"
             if wd == 1 and p == "JUAN CAMILO PEREZ": df.at[p, ds] = "L"
 
-            req = sugerencias_dict.get(p, {}).get(ds)
-            if req and df.at[p, ds] == "":
-                df.at[p, ds] = req
-                if req in turnos_noche: turnos_noche.remove(req)
-                if req in turnos_dia: turnos_dia.remove(req)
-                if any(t in req for t in ['C', 'N']) and 'P' not in req:
-                    turnos_totales[p] += 1
-                    if es_finde_o_festivo: finde_totales[p] += 1
-                    if 'N' in req: noches_totales[p] += 1
-
-        # 3. ASIGNACIONES FIJAS DE TURNO
-        if wd == 1 and df.at["JHON RIOS", ds] == "":
-            df.at["JHON RIOS", ds] = "N1"
-            if "N1" in turnos_noche: turnos_noche.remove("N1")
+        # 3. ASIGNACIONES FIJAS
+        if wd == 1 and df.at["JHON RIOS", ds] == "" and cuota_n > 0: # Martes
+            df.at["JHON RIOS", ds] = "N"
+            cuota_n -= 1
             turnos_totales["JHON RIOS"] += 1
             noches_totales["JHON RIOS"] += 1
 
-        if wd == 2 and df.at["ANGIE BERNAL", ds] == "" and "C6" in turnos_dia:
-            df.at["ANGIE BERNAL", ds] = "C6"
-            turnos_dia.remove("C6")
+        if wd == 2 and df.at["ANGIE BERNAL", ds] == "" and cuota_c > 0: # Miércoles
+            df.at["ANGIE BERNAL", ds] = "C"
+            cuota_c -= 1
             turnos_totales["ANGIE BERNAL"] += 1
 
         # 4. REPARTIR NOCHES RESTANTES
-        for t in turnos_noche:
+        for _ in range(max(0, cuota_n)):
             disp_noches = [p for p in INTEGRANTES if df.at[p, ds] == "" and not necesita_descanso(p)]
             disp_noches = [p for p in disp_noches if 'N' not in turno_en_dia(p, d-2)] # Anti N-P-N
 
@@ -136,7 +153,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
                 m_wd = (wd + 1) % 7
                 disp_noches = [p for p in disp_noches if not (
                     (m_wd == 0 and p in ["GERLIS DOMINGUEZ", "ZARIANA REYES"]) or
-                    (m_wd in [1, 2, 5] and p == "IVETTE VALENCIA") or
+                    (m_wd in [0, 1, 5] and p == "IVETTE VALENCIA") or
                     (m_wd in [3, 4] and p == "GINELAP") or
                     (m_wd == 3 and p in ["MARCELA CASTRO", "JUAN CAMILO PEREZ"]) or
                     (m_wd == 1 and p == "JUAN CAMILO PEREZ")
@@ -144,48 +161,40 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict):
 
             if not disp_noches: disp_noches = [p for p in INTEGRANTES if df.at[p, ds] == ""]
             if disp_noches:
-                random.shuffle(disp_noches) # Desempate aleatorio
-                disp_noches.sort(key=lambda x: (noches_totales[x], turnos_totales[x]))
+                random.shuffle(disp_noches)
+                disp_noches.sort(key=lambda x: (racha_actual(x), noches_totales[x], turnos_totales[x]))
                 elegido = disp_noches[0]
-                df.at[elegido, ds] = t
+                df.at[elegido, ds] = "N"
                 turnos_totales[elegido] += 1
                 noches_totales[elegido] += 1
                 if es_finde_o_festivo: finde_totales[elegido] += 1
 
-        # 5. REPARTIR CORRIDOS (CON ROTACIÓN FORZADA)
-        for t in turnos_dia:
+        # 5. REPARTIR CORRIDOS RESTANTES
+        for _ in range(max(0, cuota_c)):
             disp_dia = [p for p in INTEGRANTES if df.at[p, ds] == "" and not necesita_descanso(p)]
-            
-            # ---> REGLA NUEVA: Evitar que repita exactamente el mismo turno de ayer
-            disp_variada = [p for p in disp_dia if turno_en_dia(p, d-1) != t]
-            if disp_variada:
-                disp_dia = disp_variada # Usar la lista variada si hay opciones
-
             if not disp_dia: disp_dia = [p for p in INTEGRANTES if df.at[p, ds] == ""]
-            
             if disp_dia:
-                random.shuffle(disp_dia) # Desempate aleatorio para evitar bloques
-                if es_finde_o_festivo: disp_dia.sort(key=lambda x: (finde_totales[x], turnos_totales[x]))
-                else: disp_dia.sort(key=lambda x: turnos_totales[x])
+                random.shuffle(disp_dia)
+                if es_finde_o_festivo: disp_dia.sort(key=lambda x: (racha_actual(x), finde_totales[x], turnos_totales[x]))
+                else: disp_dia.sort(key=lambda x: (racha_actual(x), turnos_totales[x]))
                 
                 elegido = disp_dia[0]
-                df.at[elegido, ds] = t
+                df.at[elegido, ds] = "C"
                 turnos_totales[elegido] += 1
                 if es_finde_o_festivo: finde_totales[elegido] += 1
 
-        # 6. RELLENAR CON DESCANSO (D)
+        # 6. RELLENAR CON DESCANSO
         for p in INTEGRANTES:
             if df.at[p, ds] == "":
                 df.at[p, ds] = "D"
 
-    # AGREGAR COLUMNAS DE AUDITORÍA
     df['TOTAL TURNOS'] = df.apply(lambda r: sum(1 for c in df.columns if any(t in str(r[c]) for t in ['C', 'N'])), axis=1)
     df['TOTAL NOCHES'] = df.apply(lambda r: noches_totales[r.name], axis=1)
     df['FINES DE SEMANA'] = df.apply(lambda r: finde_totales[r.name], axis=1)
     return df
 
 # --- INTERFAZ ---
-st.title("🏥 Cuadro de Instrumentación (Rotación Dinámica)")
+st.title("🏥 Cuadro de Instrumentación (Modo C/N Puro)")
 
 with st.sidebar:
     st.header("1. Cargar Historial")
@@ -198,7 +207,7 @@ with st.sidebar:
     mes_sel = st.selectbox("Mes a Generar (2026)", range(1, 13), index=datetime.now().month-1)
 
 if st.button("🚀 GENERAR CUADRO DEL MES", type="primary"):
-    with st.spinner("Creando rotación sin repeticiones..."):
+    with st.spinner("Asignando turnos y garantizando salud..."):
         historial_leido = procesar_historial_empalme(archivo_previo)
         sugerencias_leidas = procesar_sugerencias(link_sheet)
         
@@ -210,4 +219,4 @@ if st.button("🚀 GENERAR CUADRO DEL MES", type="primary"):
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             resultado.to_excel(writer, index=True)
-        st.download_button("📥 Descargar Excel", output.getvalue(), f"Turnos_Rotados_{mes_sel}_2026.xlsx")
+        st.download_button("📥 Descargar Excel", output.getvalue(), f"Turnos_Puros_{mes_sel}_2026.xlsx")
