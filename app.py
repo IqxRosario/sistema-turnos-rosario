@@ -28,7 +28,7 @@ def aplicar_colores(v):
     if 'C' in str(v): return 'background-color: #fff2cc; color: #000000;' 
     return ''
 
-# --- LECTORES DE DATOS ---
+# --- LECTORES ---
 def procesar_historial_empalme(file):
     historial = {p: ["", "", ""] for p in INTEGRANTES} 
     if not file: return historial
@@ -63,7 +63,7 @@ def procesar_sugerencias(link):
             fecha = ''.join(filter(str.isdigit, str(r.get('FECHA',''))))
             sol = str(r.get('SOLICITUD','')).strip().upper()
             if nom in INTEGRANTES and fecha and sol != 'NAN': sugerencias[nom][fecha] = sol
-    except: st.sidebar.warning("Link Sugerencias no reconocido.")
+    except: st.sidebar.warning("Link Sugerencias no detectado.")
     return sugerencias
 
 def procesar_configuracion(link):
@@ -81,10 +81,10 @@ def procesar_configuracion(link):
             dias_str = str(r.get('DIAS_LIBRES',''))
             if nom in INTEGRANTES and dias_str and dias_str.lower() != 'nan':
                 libres_fijos[nom] = [int(x.strip()) for x in dias_str.split(',') if x.strip().isdigit()]
-    except: st.sidebar.warning("Link Configuración no reconocido.")
+    except: st.sidebar.warning("Link Configuración no detectado.")
     return libres_fijos
 
-# --- MOTOR DE GENERACIÓN ---
+# --- MOTOR ---
 def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, config_dict):
     dias_mes = calendar.monthrange(ano, mes)[1]
     df = pd.DataFrame(index=INTEGRANTES, columns=[str(d) for d in range(1, dias_mes + 1)]).fillna("")
@@ -100,6 +100,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
 
     for d in range(1, dias_mes + 1):
         ds = str(d); wd = datetime(ano, mes, d).weekday(); es_finde_o_festivo = wd >= 5 or es_festivo(d, mes, ano)
+        
         def racha_actual(persona):
             streak = 0
             for past_d in range(d - 1, d - 10, -1):
@@ -114,25 +115,36 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
         elif wd == 5: cuota_c = 5
         else: cuota_c = 6
 
-        # Lógica de asignación
+        # 1. POSTURNOS (PRIORIDAD 1)
         for p in INTEGRANTES:
-            if 'N' in turno_en_dia(p, d-1): df.at[p, ds] = 'P'; continue
+            if 'N' in turno_en_dia(p, d-1): df.at[p, ds] = 'P'
+
+        # 2. ASIGNACIONES FIJAS BLINDADAS (PRIORIDAD 2)
+        # Jhon: Noche los Martes
+        if wd == 1 and df.at["JHON RIOS", ds] == "":
+            df.at["JHON RIOS", ds] = "N"
+            cuota_n -= 1; turnos_totales["JHON RIOS"] += 1; noches_totales["JHON RIOS"] += 1
+        # Angie: Corrido los Miércoles
+        if wd == 2 and df.at["ANGIE BERNAL", ds] == "":
+            df.at["ANGIE BERNAL", ds] = "C"
+            cuota_c -= 1; turnos_totales["ANGIE BERNAL"] += 1
+
+        # 3. SUGERENCIAS Y LIBRES CONFIGURADOS
+        for p in INTEGRANTES:
+            if df.at[p, ds] != "": continue
+            
             req = sugerencias_dict.get(p, {}).get(ds)
             if req:
                 tl = 'C' if ('C' in req and 'P' not in req) else ('N' if ('N' in req and 'P' not in req) else req)
                 df.at[p, ds] = tl
                 if tl == 'N': cuota_n -= 1; noches_totales[p] += 1; turnos_totales[p] += 1
                 if tl == 'C': cuota_c -= 1; turnos_totales[p] += 1
-                if tl in ['C', 'N'] and es_finde_o_festivo: finde_totales[p] += 1
                 continue
-            if df.at[p, ds] == "" and wd in config_dict.get(p, []):
+            
+            if wd in config_dict.get(p, []):
                 if not (p == "JUAN CAMILO PEREZ" and wd == 3 and cuota_c > 0): df.at[p, ds] = "L"
 
-        if wd == 1 and df.at["JHON RIOS", ds] == "" and cuota_n > 0: 
-            df.at["JHON RIOS", ds] = "N"; cuota_n -= 1; turnos_totales["JHON RIOS"] += 1; noches_totales["JHON RIOS"] += 1
-        if wd == 2 and df.at["ANGIE BERNAL", ds] == "" and cuota_c > 0: 
-            df.at["ANGIE BERNAL", ds] = "C"; cuota_c -= 1; turnos_totales["ANGIE BERNAL"] += 1
-
+        # 4. REPARTIR NOCHES
         for _ in range(max(0, cuota_n)):
             disp = [p for p in INTEGRANTES if df.at[p, ds] == "" and not necesita_descanso(p)]
             disp = [p for p in disp if 'N' not in turno_en_dia(p, d-2)]
@@ -143,18 +155,17 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
             if disp:
                 random.shuffle(disp); disp.sort(key=lambda x: (noches_totales[x], racha_actual(x) >= 2, turnos_totales[x]))
                 elegido = disp[0]; df.at[elegido, ds] = "N"; turnos_totales[elegido] += 1; noches_totales[elegido] += 1
-                if es_finde_o_festivo: finde_totales[elegido] += 1
 
+        # 5. REPARTIR CORRIDOS
         for _ in range(max(0, cuota_c)):
             disp = [p for p in INTEGRANTES if df.at[p, ds] == "" and not necesita_descanso(p)]
             if not disp: disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
             if disp:
                 random.shuffle(disp)
-                if es_finde_o_festivo: disp.sort(key=lambda x: (racha_actual(x) >= 2, finde_totales[x], turnos_totales[x]))
-                else: disp.sort(key=lambda x: (racha_actual(x) >= 2, turnos_totales[x], racha_actual(x)))
+                disp.sort(key=lambda x: (racha_actual(x) >= 2, turnos_totales[x], racha_actual(x)))
                 elegido = disp[0]; df.at[elegido, ds] = "C"; turnos_totales[elegido] += 1
-                if es_finde_o_festivo: finde_totales[elegido] += 1
 
+        # 6. RELLENAR
         for p in INTEGRANTES:
             if df.at[p, ds] == "": df.at[p, ds] = "D"
 
@@ -164,51 +175,39 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
     return df
 
 # --- INTERFAZ ---
-st.title("🏥 Cuadro de Instrumentación (Modo Pro)")
+st.title("🏥 Gestor de Turnos (Corrección Blindada)")
 
 with st.sidebar:
-    st.header("1. Empalme")
-    archivo_previo = st.file_uploader("Sube el Excel anterior:", type=['xlsx', 'csv'])
-    st.header("2. Google Sheets")
-    link_sheet = st.text_input("Link SUGERENCIAS:", "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=0#gid=0")
+    st.header("1. Cargar Datos")
+    archivo_previo = st.file_uploader("Excel Mes Anterior:", type=['xlsx', 'csv'])
+    link_sheet = st.text_input("Link Sugerencias:", "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=0#gid=0")
     if link_sheet.startswith("http"): st.link_button("📝 Abrir Sugerencias", link_sheet, use_container_width=True)
-    link_config = st.text_input("Link CONFIGURACIÓN:", "")
-    st.header("3. Generación")
-    ano_sel = st.number_input("Año", min_value=2024, value=datetime.now().year)
-    mes_sel = st.selectbox("Mes", range(1, 13), index=datetime.now().month-1)
+    link_config = st.text_input("Link Configuración:", "")
+    ano_sel = st.number_input("Año:", min_value=2024, value=datetime.now().year)
+    mes_sel = st.selectbox("Mes:", range(1, 13), index=datetime.now().month-1)
 
-if st.button("🚀 GENERAR CUADRO FINAL", type="primary", use_container_width=True):
-    with st.spinner("Procesando formato y balance..."):
-        hist = procesar_historial_empalme(archivo_previo)
-        sug = procesar_sugerencias(link_sheet); conf = procesar_configuracion(link_config)
-        res = generar_cuadro_equitativo(mes_sel, ano_sel, hist, sug, conf)
-        
-        dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
-        cols_dias = [str(d) for d in range(1, dias_en_mes + 1)]
-        st.dataframe(res.style.applymap(aplicar_colores, subset=cols_dias), use_container_width=True)
-        
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            res.to_excel(writer, index=True, sheet_name='Turnos')
-            wb = writer.book; ws = writer.sheets['Turnos']
-            ws.freeze_panes(1, 1) # Inmovilizar primera fila y primera columna
-            
-            # Formatos
-            fmt_v = wb.add_format({'bg_color': '#d9ead3'}); fmt_r = wb.add_format({'bg_color': '#f4cccc'})
-            fmt_az = wb.add_format({'bg_color': '#cfe2f3'}); fmt_am = wb.add_format({'bg_color': '#fff2cc'})
-            
-            # Auto-ajuste de ancho de columnas
-            ws.set_column(0, 0, 25) # Nombres
-            ws.set_column(1, dias_en_mes, 4) # Días
-            ws.set_column(dias_en_mes + 1, dias_en_mes + 3, 15) # Totales
-
-            for r_idx, (idx, row) in enumerate(res.iterrows()):
-                for c_idx, val in enumerate(row):
-                    f = None
-                    if val in ['L', 'D']: f = fmt_v
-                    elif val == 'P': f = fmt_r
-                    elif 'N' in str(val): f = fmt_az
-                    elif 'C' in str(val): f = fmt_am
-                    ws.write(r_idx + 1, c_idx + 1, val, f)
-        
-        st.download_button("📥 Descargar Excel Formateado", output.getvalue(), f"Turnos_Final_{mes_sel}.xlsx", use_container_width=True)
+if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
+    hist = procesar_historial_empalme(archivo_previo)
+    sug = procesar_sugerencias(link_sheet); conf = procesar_configuracion(link_config)
+    res = generar_cuadro_equitativo(mes_sel, ano_sel, hist, sug, conf)
+    
+    dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
+    st.dataframe(res.style.applymap(aplicar_colores, subset=[str(d) for d in range(1, dias_en_mes + 1)]), use_container_width=True)
+    
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        res.to_excel(writer, index=True, sheet_name='Turnos')
+        wb = writer.book; ws = writer.sheets['Turnos']
+        ws.freeze_panes(1, 1)
+        fmt_v = wb.add_format({'bg_color': '#d9ead3'}); fmt_r = wb.add_format({'bg_color': '#f4cccc'})
+        fmt_az = wb.add_format({'bg_color': '#cfe2f3'}); fmt_am = wb.add_format({'bg_color': '#fff2cc'})
+        ws.set_column(0, 0, 25); ws.set_column(1, dias_en_mes, 4)
+        for r_idx, (idx, row) in enumerate(res.iterrows()):
+            for c_idx, val in enumerate(row):
+                f = None
+                if val in ['L', 'D']: f = fmt_v
+                elif val == 'P': f = fmt_r
+                elif 'N' in str(val): f = fmt_az
+                elif 'C' in str(val): f = fmt_am
+                ws.write(r_idx + 1, c_idx + 1, val, f)
+    st.download_button("📥 Descargar Excel", output.getvalue(), f"Turnos_{mes_sel}.xlsx", use_container_width=True)
