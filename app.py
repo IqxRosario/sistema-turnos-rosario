@@ -5,6 +5,7 @@ import calendar
 import random
 import io
 import holidays
+import re
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Gestor de Instrumentación", layout="wide")
@@ -16,6 +17,7 @@ INTEGRANTES = [
     "KELLY JOHANA JURADO", "JOAN SEBASTIAN AGUDELO"
 ]
 
+# --- DETECTOR AUTOMÁTICO DE FESTIVOS COLOMBIA ---
 def es_festivo(dia, mes, ano):
     co_holidays = holidays.CO(years=ano)
     return datetime(ano, mes, dia).date() in co_holidays
@@ -27,7 +29,7 @@ def aplicar_colores(v):
     if 'C' in str(v): return 'background-color: #fff2cc; color: #000000;' 
     return ''
 
-# --- LECTORES DE DATOS ---
+# --- LECTORES DE DATOS (CON LIMPIEZA REGEX) ---
 def procesar_historial_empalme(file):
     historial = {p: ["", "", ""] for p in INTEGRANTES} 
     if not file: return historial
@@ -51,11 +53,11 @@ def procesar_sugerencias(link):
     sugerencias = {p: {} for p in INTEGRANTES}
     if not link or not link.startswith("http"): return sugerencias
     try:
-        # --- NUEVA RUTA ROBUSTA PARA LEER EL LINK EXACTO ---
-        csv_link = link.split('/edit')[0] + '/export?format=csv'
-        if "gid=" in link: 
-            csv_link += "&gid=" + link.split("gid=")[1].split("&")[0]
-        
+        base_url = link.split('/edit')[0]
+        csv_link = f"{base_url}/export?format=csv"
+        match = re.search(r'gid=(\d+)', link)
+        if match: csv_link += f"&gid={match.group(1)}"
+            
         df_sug = pd.read_csv(csv_link)
         for _, r in df_sug.iterrows():
             nom = str(r.get('NOMBRE','')).strip().upper()
@@ -64,26 +66,26 @@ def procesar_sugerencias(link):
             sol = str(r.get('SOLICITUD','')).strip().upper()
             if nom in INTEGRANTES and fecha and sol != 'NAN': 
                 sugerencias[nom][fecha] = sol
-    except Exception as e: 
-        st.sidebar.warning(f"No se pudo leer el link de sugerencias. Revisa la URL.")
+    except: st.sidebar.warning("No se pudo conectar con Sugerencias.")
     return sugerencias
 
 def procesar_configuracion(link):
     libres_fijos = {p: [] for p in INTEGRANTES}
-    if not link: return libres_fijos
+    if not link or not link.startswith("http"): return libres_fijos
     try:
-        csv_link = link.split('/edit')[0] + '/export?format=csv'
-        if "gid=" in link: csv_link += "&gid=" + link.split("gid=")[1].split("&")[0]
+        base_url = link.split('/edit')[0]
+        csv_link = f"{base_url}/export?format=csv"
+        match = re.search(r'gid=(\d+)', link)
+        if match: csv_link += f"&gid={match.group(1)}"
         
         df_conf = pd.read_csv(csv_link)
         for _, r in df_conf.iterrows():
             nom = str(r.get('NOMBRE','')).strip().upper()
             if "GINELAP" in nom: nom = "GINELAP"
             dias_str = str(r.get('DIAS_LIBRES',''))
-            
             if nom in INTEGRANTES and dias_str and dias_str.lower() != 'nan':
                 libres_fijos[nom] = [int(x.strip()) for x in dias_str.split(',') if x.strip().isdigit()]
-    except Exception as e: st.sidebar.warning("No se pudo leer la Configuración.")
+    except: st.sidebar.warning("No se pudo conectar con Configuración.")
     return libres_fijos
 
 # --- MOTOR DE GENERACIÓN ---
@@ -119,12 +121,13 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
         def necesita_descanso(persona):
             return racha_actual(persona) >= 3
 
+        # Cuotas diarias
         cuota_n = 2
         if es_festivo(d, mes, ano) or wd == 6: cuota_c = 2
         elif wd == 5: cuota_c = 5
         else: cuota_c = 6
 
-        # 1. POSTURNOS Y SUGERENCIAS
+        # 1. POSTURNOS Y SUGERENCIAS (CON LIMPIEZA DE C1, N1, ETC)
         for p in INTEGRANTES:
             if 'N' in turno_en_dia(p, d-1): 
                 df.at[p, ds] = 'P'
@@ -144,7 +147,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                     if es_finde_o_festivo: finde_totales[p] += 1
                     if turno_limpio == 'N': noches_totales[p] += 1
 
-        # 2. LIBRES FIJOS
+        # 2. LIBRES FIJOS (CONFIGURACIÓN)
         for p in INTEGRANTES:
             if df.at[p, ds] == "" and wd in config_dict.get(p, []):
                 if p == "JUAN CAMILO PEREZ" and wd == 3 and cuota_c > 0:
@@ -152,52 +155,40 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 else:
                     df.at[p, ds] = "L"
 
-        # 3. ASIGNACIONES FIJAS
+        # 3. ASIGNACIONES FIJAS (JHON Y ANGIE)
         if wd == 1 and df.at["JHON RIOS", ds] == "" and cuota_n > 0: 
-            df.at["JHON RIOS", ds] = "N"
-            cuota_n -= 1
-            turnos_totales["JHON RIOS"] += 1
-            noches_totales["JHON RIOS"] += 1
-
+            df.at["JHON RIOS", ds] = "N"; cuota_n -= 1; turnos_totales["JHON RIOS"] += 1; noches_totales["JHON RIOS"] += 1
         if wd == 2 and df.at["ANGIE BERNAL", ds] == "" and cuota_c > 0: 
-            df.at["ANGIE BERNAL", ds] = "C"
-            cuota_c -= 1
-            turnos_totales["ANGIE BERNAL"] += 1
+            df.at["ANGIE BERNAL", ds] = "C"; cuota_c -= 1; turnos_totales["ANGIE BERNAL"] += 1
 
-        # 4. REPARTIR NOCHES
+        # 4. NOCHES (EQUIDAD TOTAL)
         for _ in range(max(0, cuota_n)):
-            disp_noches = [p for p in INTEGRANTES if df.at[p, ds] == "" and not necesita_descanso(p)]
-            disp_noches = [p for p in disp_noches if 'N' not in turno_en_dia(p, d-2)] 
-
+            disp = [p for p in INTEGRANTES if df.at[p, ds] == "" and not necesita_descanso(p)]
+            disp = [p for p in disp if 'N' not in turno_en_dia(p, d-2)] # Anti N-P-N
             if d < dias_mes:
                 m_wd = (wd + 1) % 7
-                disp_noches = [p for p in disp_noches if m_wd not in config_dict.get(p, [])]
+                disp = [p for p in disp if m_wd not in config_dict.get(p, [])] # Escudo Posturno
 
-            if not disp_noches: disp_noches = [p for p in INTEGRANTES if df.at[p, ds] == ""]
-            if disp_noches:
-                random.shuffle(disp_noches)
-                disp_noches.sort(key=lambda x: (noches_totales[x], racha_actual(x) >= 2, turnos_totales[x]))
-                elegido = disp_noches[0]
-                df.at[elegido, ds] = "N"
-                turnos_totales[elegido] += 1
-                noches_totales[elegido] += 1
+            if not disp: disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
+            if disp:
+                random.shuffle(disp)
+                disp.sort(key=lambda x: (noches_totales[x], racha_actual(x) >= 2, turnos_totales[x]))
+                elegido = disp[0]; df.at[elegido, ds] = "N"
+                turnos_totales[elegido] += 1; noches_totales[elegido] += 1
                 if es_finde_o_festivo: finde_totales[elegido] += 1
 
-        # 5. REPARTIR CORRIDOS
+        # 5. CORRIDOS (ANTIFATIGA)
         for _ in range(max(0, cuota_c)):
-            disp_dia = [p for p in INTEGRANTES if df.at[p, ds] == "" and not necesita_descanso(p)]
-            if not disp_dia: disp_dia = [p for p in INTEGRANTES if df.at[p, ds] == ""]
-            if disp_dia:
-                random.shuffle(disp_dia)
-                if es_finde_o_festivo: disp_dia.sort(key=lambda x: (racha_actual(x) >= 2, finde_totales[x], turnos_totales[x]))
-                else: disp_dia.sort(key=lambda x: (racha_actual(x) >= 2, turnos_totales[x], racha_actual(x)))
-                
-                elegido = disp_dia[0]
-                df.at[elegido, ds] = "C"
-                turnos_totales[elegido] += 1
+            disp = [p for p in INTEGRANTES if df.at[p, ds] == "" and not necesita_descanso(p)]
+            if not disp: disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
+            if disp:
+                random.shuffle(disp)
+                if es_finde_o_festivo: disp.sort(key=lambda x: (racha_actual(x) >= 2, finde_totales[x], turnos_totales[x]))
+                else: disp.sort(key=lambda x: (racha_actual(x) >= 2, turnos_totales[x], racha_actual(x)))
+                elegido = disp[0]; df.at[elegido, ds] = "C"; turnos_totales[elegido] += 1
                 if es_finde_o_festivo: finde_totales[elegido] += 1
 
-        # 6. RELLENAR CON DESCANSO
+        # 6. RELLENAR
         for p in INTEGRANTES:
             if df.at[p, ds] == "": df.at[p, ds] = "D"
 
@@ -207,37 +198,32 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
     return df
 
 # --- INTERFAZ ---
-st.title("🏥 Cuadro de Instrumentación Automático")
+st.title("🏥 Cuadro de Instrumentación (Motor Definitivo)")
 
 with st.sidebar:
     st.header("1. Empalme (Mes Anterior)")
     archivo_previo = st.file_uploader("Sube el Excel:", type=['xlsx', 'csv'])
     
-    st.header("2. Bases de Datos (Google Sheets)")
-    link_sheet = st.text_input("Link Pestaña SUGERENCIAS:", "https://docs.google.com/spreadsheets/d/...")
+    st.header("2. Google Sheets")
+    link_sheet = st.text_input("Link SUGERENCIAS:", "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=0#gid=0")
     if link_sheet.startswith("http"):
-        st.link_button("📝 Abrir Sugerencias", link_sheet, use_container_width=True)
+        st.link_button("📝 Abrir Hoja de Sugerencias", link_sheet, use_container_width=True)
 
-    link_config = st.text_input("Link Pestaña CONFIGURACIÓN (Libres Fijos):", "https://docs.google.com/spreadsheets/d/...")
-    if link_config.startswith("http"):
-        st.link_button("⚙️ Abrir Configuración", link_config, use_container_width=True)
+    link_config = st.text_input("Link CONFIGURACIÓN:", "")
     
     st.header("3. Generación")
     ano_sel = st.number_input("Año", min_value=2024, max_value=2035, value=datetime.now().year)
     mes_sel = st.selectbox("Mes", range(1, 13), index=datetime.now().month-1)
 
 if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
-    with st.spinner("Conectando con Google Sheets y balanceando..."):
-        historial_leido = procesar_historial_empalme(archivo_previo)
-        sugerencias_leidas = procesar_sugerencias(link_sheet)
-        config_leida = procesar_configuracion(link_config)
+    with st.spinner("Conectando y balanceando..."):
+        historial = procesar_historial_empalme(archivo_previo)
+        sug = procesar_sugerencias(link_sheet)
+        conf = procesar_configuracion(link_config)
+        res = generar_cuadro_equitativo(mes_sel, ano_sel, historial, sug, conf)
         
-        resultado = generar_cuadro_equitativo(mes_sel, ano_sel, historial_leido, sugerencias_leidas, config_leida)
-        
-        cols_dias = [str(d) for d in range(1, calendar.monthrange(ano_sel, mes_sel)[1] + 1)]
-        st.dataframe(resultado.style.applymap(aplicar_colores, subset=cols_dias), use_container_width=True)
+        st.dataframe(res.style.applymap(aplicar_colores, subset=[str(d) for d in range(1, calendar.monthrange(ano_sel, mes_sel)[1] + 1)]), use_container_width=True)
         
         output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            resultado.to_excel(writer, index=True)
-        st.download_button("📥 Descargar Nómina Excel", output.getvalue(), f"Turnos_{mes_sel}_{ano_sel}.xlsx", use_container_width=True)
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer: res.to_excel(writer, index=True)
+        st.download_button("📥 Descargar Excel", output.getvalue(), f"Turnos_{mes_sel}_{ano_sel}.xlsx", use_container_width=True)
