@@ -49,17 +49,23 @@ def procesar_historial_empalme(file):
 
 def procesar_sugerencias(link):
     sugerencias = {p: {} for p in INTEGRANTES}
-    if not link: return sugerencias
+    if not link or not link.startswith("http"): return sugerencias
     try:
-        csv_link = link.split('/edit')[0] + '/export?format=csv' if "/edit" in link else link
+        # --- NUEVA RUTA ROBUSTA PARA LEER EL LINK EXACTO ---
+        csv_link = link.split('/edit')[0] + '/export?format=csv'
+        if "gid=" in link: 
+            csv_link += "&gid=" + link.split("gid=")[1].split("&")[0]
+        
         df_sug = pd.read_csv(csv_link)
         for _, r in df_sug.iterrows():
             nom = str(r.get('NOMBRE','')).strip().upper()
             if "GINELAP" in nom: nom = "GINELAP"
             fecha = ''.join(filter(str.isdigit, str(r.get('FECHA',''))))
             sol = str(r.get('SOLICITUD','')).strip().upper()
-            if nom in INTEGRANTES and fecha and sol != 'NAN': sugerencias[nom][fecha] = sol
-    except: st.sidebar.warning("No se pudo leer el link de sugerencias.")
+            if nom in INTEGRANTES and fecha and sol != 'NAN': 
+                sugerencias[nom][fecha] = sol
+    except Exception as e: 
+        st.sidebar.warning(f"No se pudo leer el link de sugerencias. Revisa la URL.")
     return sugerencias
 
 def procesar_configuracion(link):
