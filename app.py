@@ -15,7 +15,7 @@ INTEGRANTES = [
     "ZARIANA REYES", "IVETTE VALENCIA", "GINELAP", "ANA ESCOBAR",
     "JUAN CAMILO PEREZ", "ERNESTO MUSKUS", "RANCES ARGUMEDO", 
     "KELLY CAUSIL", "JOAN CARMONA"
-]
+
 
 def es_festivo(dia, mes, ano):
     co_holidays = holidays.CO(years=ano)
