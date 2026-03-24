@@ -217,7 +217,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
     return df
 
 # --- INTERFAZ ---
-st.title("🏥 Gestor de Turnos (Oficial)")
+st.title("🏥 Gestor de Turnos (Diseño Blindado)")
 
 with st.sidebar:
     st.header("1. Cargar Datos")
@@ -234,37 +234,40 @@ if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
     res = generar_cuadro_equitativo(mes_sel, ano_sel, hist, sug, conf)
     
     dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
-    st.dataframe(res.style.applymap(aplicar_colores, subset=[str(d) for d in range(1, dias_en_mes + 1)]), use_container_width=True)
     
-    # --- AQUI EMPIEZA LA MAGIA DEL DISEÑO EXCEL ---
+    # 1. Mostrar en la web de Streamlit
+    st.dataframe(res.style.map(aplicar_colores, subset=[str(d) for d in range(1, dias_en_mes + 1)]), use_container_width=True)
+    
+    # --- 2. LA NUEVA FORMA DE CONSTRUIR EL EXCEL (SIN CORRUPCIÓN) ---
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        res.to_excel(writer, index=True, sheet_name='Turnos')
         wb = writer.book
-        ws = writer.sheets['Turnos']
+        ws = wb.add_worksheet('Turnos')
+        ws.freeze_panes(1, 1) # Congelar panel
         
-        # Inmovilizar el nombre y los días para que no se pierdan al hacer scroll
-        ws.freeze_panes(1, 1)
-        
-        # Paleta de formatos con BORDES y CENTRADO
+        # Misma paleta de colores pero asignada manualmente a xlsxwriter
         base_fmt = {'border': 1, 'align': 'center', 'valign': 'vcenter'}
         fmt_v = wb.add_format({**base_fmt, 'bg_color': '#d9ead3'}) # L, D
         fmt_r = wb.add_format({**base_fmt, 'bg_color': '#f4cccc'}) # P
         fmt_az = wb.add_format({**base_fmt, 'bg_color': '#cfe2f3'}) # N
         fmt_am = wb.add_format({**base_fmt, 'bg_color': '#fff2cc'}) # C
         fmt_default = wb.add_format(base_fmt)
-        
-        # Formatos especiales para títulos y nombres
         fmt_headers = wb.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#e0e0e0'})
         fmt_names = wb.add_format({'bold': True, 'border': 1, 'align': 'left', 'valign': 'vcenter'})
         
-        # Ajustar anchos de columna
-        ws.set_column(0, 0, 25, fmt_names) # Nombres anchos
-        ws.set_column(1, dias_en_mes, 4, fmt_default) # Días ajustados a las letras
-        ws.set_column(dias_en_mes + 1, dias_en_mes + 3, 16, fmt_default) # Columnas de totales más anchas
+        # Anchos de columna fijos
+        ws.set_column(0, 0, 25) 
+        ws.set_column(1, dias_en_mes, 4) 
+        ws.set_column(dias_en_mes + 1, dias_en_mes + 3, 16) 
         
-        # Reescribir el interior con los colores bonitos
+        # Escribir primero la fila de los días (Encabezados)
+        ws.write(0, 0, "INTEGRANTES", fmt_headers)
+        for col_num, col_name in enumerate(res.columns):
+            ws.write(0, col_num + 1, str(col_name), fmt_headers)
+            
+        # Escribir los datos y formatos celda por celda (Cero choques)
         for r_idx, (idx, row) in enumerate(res.iterrows()):
+            ws.write(r_idx + 1, 0, str(idx), fmt_names) # Columna Nombres
             for c_idx, val in enumerate(row):
                 f = fmt_default
                 if val in ['L', 'D']: f = fmt_v
@@ -273,9 +276,4 @@ if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
                 elif 'C' in str(val): f = fmt_am
                 ws.write(r_idx + 1, c_idx + 1, val, f)
                 
-        # Reescribir los encabezados superiores (Días y Títulos)
-        ws.write(0, 0, "INTEGRANTES", fmt_headers)
-        for col_num, col_name in enumerate(res.columns):
-            ws.write(0, col_num + 1, col_name, fmt_headers)
-            
     st.download_button("📥 Descargar Excel", output.getvalue(), f"Turnos_{mes_sel}.xlsx", use_container_width=True)
