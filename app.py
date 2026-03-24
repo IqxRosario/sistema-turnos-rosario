@@ -29,7 +29,9 @@ def aplicar_colores(v):
     if 'C' in str(v): return 'background-color: #fff2cc; color: #000000;' 
     return ''
 
-# --- LECTORES ---
+# --- LECTORES (AHORA CON MEMORIA CACHÉ PARA SER MÁS RÁPIDOS) ---
+
+@st.cache_data(ttl=60) # Memoriza por 60 segundos para no saturar el internet
 def procesar_historial_empalme(file):
     historial = {p: ["", "", ""] for p in INTEGRANTES} 
     if not file: return historial
@@ -49,6 +51,7 @@ def procesar_historial_empalme(file):
     except Exception: st.sidebar.error("Error en historial.")
     return historial
 
+@st.cache_data(ttl=60)
 def procesar_sugerencias(link):
     sugerencias = {p: {} for p in INTEGRANTES}
     if not link or not link.startswith("http"): return sugerencias
@@ -67,6 +70,7 @@ def procesar_sugerencias(link):
     except: st.sidebar.warning("Link Sugerencias no detectado.")
     return sugerencias
 
+@st.cache_data(ttl=60)
 def procesar_configuracion(link):
     libres_fijos = {p: [] for p in INTEGRANTES}
     if not link or not link.startswith("http"): return libres_fijos
@@ -218,7 +222,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
     return df
 
 # --- INTERFAZ ---
-st.title("🏥 Gestor de Turnos (Diseño Blindado)")
+st.title("🏥 Gestor de Turnos (Rápido y Blindado)")
 
 with st.sidebar:
     st.header("1. Cargar Datos")
@@ -236,10 +240,10 @@ if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
     
     dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
     
-    # 1. Mostrar en la web
+    # Mostrar tabla visual
     st.dataframe(res.style.map(aplicar_colores, subset=[str(d) for d in range(1, dias_en_mes + 1)]), use_container_width=True)
     
-    # 2. Generar el Excel con colores (xlsxwriter)
+    # Preparar el archivo de Excel real (NO el CSV tramposo de Streamlit)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         wb = writer.book
@@ -272,5 +276,12 @@ if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
                 elif 'N' in str(val): f = fmt_az
                 elif 'C' in str(val): f = fmt_am
                 ws.write(r_idx + 1, c_idx + 1, val, f)
-                
-    st.download_button("📥 Descargar Excel", output.getvalue(), f"Turnos_{mes_sel}.xlsx", use_container_width=True)
+    
+    # ¡AQUÍ ESTÁ EL BOTÓN CORRECTO Y BLINDADO PARA DESCARGAR EXCEL!
+    st.download_button(
+        label="📥 Descargar Excel", 
+        data=output.getvalue(), 
+        file_name=f"Turnos_{mes_sel}.xlsx", 
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", # Etiqueta oficial de Excel
+        use_container_width=True
+    )
