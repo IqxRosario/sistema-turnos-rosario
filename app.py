@@ -110,6 +110,22 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
             return streak
         def necesita_descanso(persona): return racha_actual(persona) >= 3
 
+        # ---- RADARES DEL FUTURO (NUEVO BLINDAJE) ----
+        def arruina_noche_futura(persona, dia_actual):
+            if dia_actual + 1 <= dias_mes:
+                s_man = sugerencias_dict.get(persona, {}).get(str(dia_actual + 1))
+                if s_man and any(t in s_man for t in ['C', 'N']): return True # Mañana tendría P y perdería su sugerencia
+            if dia_actual + 2 <= dias_mes:
+                s_pas = sugerencias_dict.get(persona, {}).get(str(dia_actual + 2))
+                if s_pas and 'N' in s_pas: return True # Crearía un N-P-N si le doy noche hoy
+            return False
+            
+        def arruina_corrido_futuro(persona, dia_actual):
+            if racha_actual(persona) == 2 and dia_actual + 1 <= dias_mes:
+                s_man = sugerencias_dict.get(persona, {}).get(str(dia_actual + 1))
+                if s_man and any(t in s_man for t in ['C', 'N']): return True # Entraría en fatiga extrema y perdería su sugerencia
+            return False
+
         cuota_n = 2
         if es_finde_o_festivo and (wd == 6 or es_festivo(d, mes, ano)): cuota_c = 2
         elif wd == 5: cuota_c = 5
@@ -123,12 +139,12 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
         if wd == 1 and df.at["JHON RIOS", ds] == "":
             df.at["JHON RIOS", ds] = "N"
             cuota_n -= 1; turnos_totales["JHON RIOS"] += 1; noches_totales["JHON RIOS"] += 1
-            if es_finde_o_festivo: finde_totales["JHON RIOS"] += 1 # Suma si un martes es festivo
+            if es_finde_o_festivo: finde_totales["JHON RIOS"] += 1
             
         if wd == 2 and df.at["ANGIE BERNAL", ds] == "":
             df.at["ANGIE BERNAL", ds] = "C"
             cuota_c -= 1; turnos_totales["ANGIE BERNAL"] += 1
-            if es_finde_o_festivo: finde_totales["ANGIE BERNAL"] += 1 # Suma si un miércoles es festivo
+            if es_finde_o_festivo: finde_totales["ANGIE BERNAL"] += 1
 
         # 3. SUGERENCIAS (PRIORIDAD 3)
         for p in INTEGRANTES:
@@ -139,7 +155,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 df.at[p, ds] = tl
                 if tl == 'N': cuota_n -= 1; noches_totales[p] += 1; turnos_totales[p] += 1
                 if tl == 'C': cuota_c -= 1; turnos_totales[p] += 1
-                if tl in ['C', 'N'] and es_finde_o_festivo: finde_totales[p] += 1 # Suma si pide finde
+                if tl in ['C', 'N'] and es_finde_o_festivo: finde_totales[p] += 1
 
         # 4. LIBRES FIJOS (PRIORIDAD 4)
         for p in INTEGRANTES:
@@ -150,33 +166,47 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
         # 5. REPARTIR NOCHES
         for _ in range(max(0, cuota_n)):
             disp = [p for p in INTEGRANTES if df.at[p, ds] == "" and not necesita_descanso(p)]
-            disp = [p for p in disp if 'N' not in turno_en_dia(p, d-2)]
+            disp = [p for p in disp if 'N' not in turno_en_dia(p, d-2)] # Anti N-P-N
+            
+            # Aplicar Radar Futuro
+            disp_segura = [p for p in disp if not arruina_noche_futura(p, d)]
+            
             if d < dias_mes:
                 m_wd = (wd + 1) % 7
-                disp = [p for p in disp if m_wd not in config_dict.get(p, [])]
-            if not disp: disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
-            if disp:
-                random.shuffle(disp)
-                # Ojo aquí: Si es finde, ordena a los de menos findes primero
-                if es_finde_o_festivo: disp.sort(key=lambda x: (noches_totales[x], finde_totales[x], racha_actual(x) >= 2, turnos_totales[x]))
-                else: disp.sort(key=lambda x: (noches_totales[x], racha_actual(x) >= 2, turnos_totales[x]))
+                disp_segura = [p for p in disp_segura if m_wd not in config_dict.get(p, [])]
+
+            if not disp_segura: 
+                disp_segura = [p for p in disp if m_wd not in config_dict.get(p, [])] if d < dias_mes else disp
+                if not disp_segura: disp_segura = disp 
+
+            if not disp_segura: disp_segura = [p for p in INTEGRANTES if df.at[p, ds] == ""]
+            
+            if disp_segura:
+                random.shuffle(disp_segura)
+                if es_finde_o_festivo: disp_segura.sort(key=lambda x: (noches_totales[x], finde_totales[x], racha_actual(x) >= 2, turnos_totales[x]))
+                else: disp_segura.sort(key=lambda x: (noches_totales[x], racha_actual(x) >= 2, turnos_totales[x]))
                 
-                elegido = disp[0]; df.at[elegido, ds] = "N"
+                elegido = disp_segura[0]; df.at[elegido, ds] = "N"
                 turnos_totales[elegido] += 1; noches_totales[elegido] += 1
-                if es_finde_o_festivo: finde_totales[elegido] += 1 # ¡Acá estaba el error, ya suma!
+                if es_finde_o_festivo: finde_totales[elegido] += 1
 
         # 6. REPARTIR CORRIDOS
         for _ in range(max(0, cuota_c)):
             disp = [p for p in INTEGRANTES if df.at[p, ds] == "" and not necesita_descanso(p)]
-            if not disp: disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
-            if disp:
-                random.shuffle(disp)
-                # Ojo aquí: Si es finde, ordena a los de menos findes primero
-                if es_finde_o_festivo: disp.sort(key=lambda x: (racha_actual(x) >= 2, finde_totales[x], turnos_totales[x]))
-                else: disp.sort(key=lambda x: (racha_actual(x) >= 2, turnos_totales[x], racha_actual(x)))
+            
+            # Aplicar Radar Futuro
+            disp_segura = [p for p in disp if not arruina_corrido_futuro(p, d)]
+            if not disp_segura: disp_segura = disp
+            
+            if not disp_segura: disp_segura = [p for p in INTEGRANTES if df.at[p, ds] == ""]
+            
+            if disp_segura:
+                random.shuffle(disp_segura)
+                if es_finde_o_festivo: disp_segura.sort(key=lambda x: (racha_actual(x) >= 2, finde_totales[x], turnos_totales[x]))
+                else: disp_segura.sort(key=lambda x: (racha_actual(x) >= 2, turnos_totales[x], racha_actual(x)))
                 
-                elegido = disp[0]; df.at[elegido, ds] = "C"; turnos_totales[elegido] += 1
-                if es_finde_o_festivo: finde_totales[elegido] += 1 # ¡Acá estaba el error, ya suma!
+                elegido = disp_segura[0]; df.at[elegido, ds] = "C"; turnos_totales[elegido] += 1
+                if es_finde_o_festivo: finde_totales[elegido] += 1
 
         # 7. RELLENAR CON DESCANSO
         for p in INTEGRANTES:
@@ -188,7 +218,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
     return df
 
 # --- INTERFAZ ---
-st.title("🏥 Gestor de Turnos (Fines de Semana y Sugerencias)")
+st.title("🏥 Gestor de Turnos (Radar Futuro Activo)")
 
 with st.sidebar:
     st.header("1. Cargar Datos")
