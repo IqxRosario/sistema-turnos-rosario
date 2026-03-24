@@ -123,18 +123,14 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
         if wd == 1 and df.at["JHON RIOS", ds] == "":
             df.at["JHON RIOS", ds] = "N"
             cuota_n -= 1; turnos_totales["JHON RIOS"] += 1; noches_totales["JHON RIOS"] += 1
+            if es_finde_o_festivo: finde_totales["JHON RIOS"] += 1 # Suma si un martes es festivo
+            
         if wd == 2 and df.at["ANGIE BERNAL", ds] == "":
             df.at["ANGIE BERNAL", ds] = "C"
             cuota_c -= 1; turnos_totales["ANGIE BERNAL"] += 1
+            if es_finde_o_festivo: finde_totales["ANGIE BERNAL"] += 1 # Suma si un miércoles es festivo
 
-        # 3. LIBRES FIJOS (PRIORIDAD 3 - Leídos de Configuración)
-        for p in INTEGRANTES:
-            if df.at[p, ds] == "" and wd in config_dict.get(p, []):
-                # Excepción Camilo Jueves: se deja vacío para ver si sugerencias lo ocupa o queda libre
-                if not (p == "JUAN CAMILO PEREZ" and wd == 3): 
-                    df.at[p, ds] = "L"
-
-        # 4. SUGERENCIAS (PRIORIDAD 4)
+        # 3. SUGERENCIAS (PRIORIDAD 3)
         for p in INTEGRANTES:
             if df.at[p, ds] != "": continue
             req = sugerencias_dict.get(p, {}).get(ds)
@@ -143,6 +139,13 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 df.at[p, ds] = tl
                 if tl == 'N': cuota_n -= 1; noches_totales[p] += 1; turnos_totales[p] += 1
                 if tl == 'C': cuota_c -= 1; turnos_totales[p] += 1
+                if tl in ['C', 'N'] and es_finde_o_festivo: finde_totales[p] += 1 # Suma si pide finde
+
+        # 4. LIBRES FIJOS (PRIORIDAD 4)
+        for p in INTEGRANTES:
+            if df.at[p, ds] == "" and wd in config_dict.get(p, []):
+                if not (p == "JUAN CAMILO PEREZ" and wd == 3): 
+                    df.at[p, ds] = "L"
 
         # 5. REPARTIR NOCHES
         for _ in range(max(0, cuota_n)):
@@ -153,8 +156,14 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 disp = [p for p in disp if m_wd not in config_dict.get(p, [])]
             if not disp: disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
             if disp:
-                random.shuffle(disp); disp.sort(key=lambda x: (noches_totales[x], racha_actual(x) >= 2, turnos_totales[x]))
-                elegido = disp[0]; df.at[elegido, ds] = "N"; turnos_totales[elegido] += 1; noches_totales[elegido] += 1
+                random.shuffle(disp)
+                # Ojo aquí: Si es finde, ordena a los de menos findes primero
+                if es_finde_o_festivo: disp.sort(key=lambda x: (noches_totales[x], finde_totales[x], racha_actual(x) >= 2, turnos_totales[x]))
+                else: disp.sort(key=lambda x: (noches_totales[x], racha_actual(x) >= 2, turnos_totales[x]))
+                
+                elegido = disp[0]; df.at[elegido, ds] = "N"
+                turnos_totales[elegido] += 1; noches_totales[elegido] += 1
+                if es_finde_o_festivo: finde_totales[elegido] += 1 # ¡Acá estaba el error, ya suma!
 
         # 6. REPARTIR CORRIDOS
         for _ in range(max(0, cuota_c)):
@@ -162,8 +171,12 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
             if not disp: disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
             if disp:
                 random.shuffle(disp)
-                disp.sort(key=lambda x: (racha_actual(x) >= 2, turnos_totales[x], racha_actual(x)))
+                # Ojo aquí: Si es finde, ordena a los de menos findes primero
+                if es_finde_o_festivo: disp.sort(key=lambda x: (racha_actual(x) >= 2, finde_totales[x], turnos_totales[x]))
+                else: disp.sort(key=lambda x: (racha_actual(x) >= 2, turnos_totales[x], racha_actual(x)))
+                
                 elegido = disp[0]; df.at[elegido, ds] = "C"; turnos_totales[elegido] += 1
+                if es_finde_o_festivo: finde_totales[elegido] += 1 # ¡Acá estaba el error, ya suma!
 
         # 7. RELLENAR CON DESCANSO
         for p in INTEGRANTES:
@@ -175,7 +188,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
     return df
 
 # --- INTERFAZ ---
-st.title("🏥 Gestor de Turnos (Prioridad Total)")
+st.title("🏥 Gestor de Turnos (Fines de Semana y Sugerencias)")
 
 with st.sidebar:
     st.header("1. Cargar Datos")
