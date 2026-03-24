@@ -108,22 +108,23 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 if any(t in t_p for t in ['C', 'N']) and 'P' not in t_p: streak += 1
                 else: break
             return streak
+        
+        # EL CANDADO ESTRICTO DE 3 DÍAS MAXIMO
         def necesita_descanso(persona): return racha_actual(persona) >= 3
 
-        # ---- RADARES DEL FUTURO (NUEVO BLINDAJE) ----
         def arruina_noche_futura(persona, dia_actual):
             if dia_actual + 1 <= dias_mes:
                 s_man = sugerencias_dict.get(persona, {}).get(str(dia_actual + 1))
-                if s_man and any(t in s_man for t in ['C', 'N']): return True # Mañana tendría P y perdería su sugerencia
+                if s_man and any(t in s_man for t in ['C', 'N', 'L']): return True 
             if dia_actual + 2 <= dias_mes:
                 s_pas = sugerencias_dict.get(persona, {}).get(str(dia_actual + 2))
-                if s_pas and 'N' in s_pas: return True # Crearía un N-P-N si le doy noche hoy
+                if s_pas and 'N' in s_pas: return True 
             return False
             
         def arruina_corrido_futuro(persona, dia_actual):
             if racha_actual(persona) == 2 and dia_actual + 1 <= dias_mes:
                 s_man = sugerencias_dict.get(persona, {}).get(str(dia_actual + 1))
-                if s_man and any(t in s_man for t in ['C', 'N']): return True # Entraría en fatiga extrema y perdería su sugerencia
+                if s_man and any(t in s_man for t in ['C', 'N']): return True 
             return False
 
         cuota_n = 2
@@ -134,6 +135,11 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
         # 1. POSTURNOS (PRIORIDAD 1)
         for p in INTEGRANTES:
             if 'N' in turno_en_dia(p, d-1): df.at[p, ds] = 'P'
+
+        # CANDADO ACTIVO: Forzar Descanso a los que llegaron al límite, sin importar NADA MÁS.
+        for p in INTEGRANTES:
+            if df.at[p, ds] == "" and necesita_descanso(p):
+                df.at[p, ds] = 'D'
 
         # 2. ASIGNACIONES FIJAS BLINDADAS (PRIORIDAD 2)
         if wd == 1 and df.at["JHON RIOS", ds] == "":
@@ -163,12 +169,12 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 if not (p == "JUAN CAMILO PEREZ" and wd == 3): 
                     df.at[p, ds] = "L"
 
-        # 5. REPARTIR NOCHES
+        # 5. REPARTIR NOCHES (CON FILTRO ESTRICTO DE FATIGA)
         for _ in range(max(0, cuota_n)):
-            disp = [p for p in INTEGRANTES if df.at[p, ds] == "" and not necesita_descanso(p)]
-            disp = [p for p in disp if 'N' not in turno_en_dia(p, d-2)] # Anti N-P-N
+            # Solo consideramos a los que NO están cansados (el candado los saca)
+            disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
+            disp = [p for p in disp if 'N' not in turno_en_dia(p, d-2)]
             
-            # Aplicar Radar Futuro
             disp_segura = [p for p in disp if not arruina_noche_futura(p, d)]
             
             if d < dias_mes:
@@ -178,32 +184,27 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
             if not disp_segura: 
                 disp_segura = [p for p in disp if m_wd not in config_dict.get(p, [])] if d < dias_mes else disp
                 if not disp_segura: disp_segura = disp 
-
-            if not disp_segura: disp_segura = [p for p in INTEGRANTES if df.at[p, ds] == ""]
             
             if disp_segura:
                 random.shuffle(disp_segura)
-                if es_finde_o_festivo: disp_segura.sort(key=lambda x: (noches_totales[x], finde_totales[x], racha_actual(x) >= 2, turnos_totales[x]))
-                else: disp_segura.sort(key=lambda x: (noches_totales[x], racha_actual(x) >= 2, turnos_totales[x]))
+                if es_finde_o_festivo: disp_segura.sort(key=lambda x: (noches_totales[x], finde_totales[x], turnos_totales[x]))
+                else: disp_segura.sort(key=lambda x: (noches_totales[x], turnos_totales[x]))
                 
                 elegido = disp_segura[0]; df.at[elegido, ds] = "N"
                 turnos_totales[elegido] += 1; noches_totales[elegido] += 1
                 if es_finde_o_festivo: finde_totales[elegido] += 1
 
-        # 6. REPARTIR CORRIDOS
+        # 6. REPARTIR CORRIDOS (CON FILTRO ESTRICTO DE FATIGA)
         for _ in range(max(0, cuota_c)):
-            disp = [p for p in INTEGRANTES if df.at[p, ds] == "" and not necesita_descanso(p)]
+            disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
             
-            # Aplicar Radar Futuro
             disp_segura = [p for p in disp if not arruina_corrido_futuro(p, d)]
             if not disp_segura: disp_segura = disp
             
-            if not disp_segura: disp_segura = [p for p in INTEGRANTES if df.at[p, ds] == ""]
-            
             if disp_segura:
                 random.shuffle(disp_segura)
-                if es_finde_o_festivo: disp_segura.sort(key=lambda x: (racha_actual(x) >= 2, finde_totales[x], turnos_totales[x]))
-                else: disp_segura.sort(key=lambda x: (racha_actual(x) >= 2, turnos_totales[x], racha_actual(x)))
+                if es_finde_o_festivo: disp_segura.sort(key=lambda x: (finde_totales[x], turnos_totales[x]))
+                else: disp_segura.sort(key=lambda x: (turnos_totales[x], racha_actual(x)))
                 
                 elegido = disp_segura[0]; df.at[elegido, ds] = "C"; turnos_totales[elegido] += 1
                 if es_finde_o_festivo: finde_totales[elegido] += 1
@@ -218,7 +219,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
     return df
 
 # --- INTERFAZ ---
-st.title("🏥 Gestor de Turnos (Radar Futuro Activo)")
+st.title("🏥 Gestor de Turnos (Anti-Fatiga Estricto)")
 
 with st.sidebar:
     st.header("1. Cargar Datos")
@@ -254,3 +255,4 @@ if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
                 elif 'C' in str(val): f = fmt_am
                 ws.write(r_idx + 1, c_idx + 1, val, f)
     st.download_button("📥 Descargar Excel", output.getvalue(), f"Turnos_{mes_sel}.xlsx", use_container_width=True)
+    
