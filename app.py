@@ -109,7 +109,6 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 else: break
             return streak
         
-        # EL CANDADO ESTRICTO DE 3 DÍAS MAXIMO
         def necesita_descanso(persona): return racha_actual(persona) >= 3
 
         def arruina_noche_futura(persona, dia_actual):
@@ -136,7 +135,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
         for p in INTEGRANTES:
             if 'N' in turno_en_dia(p, d-1): df.at[p, ds] = 'P'
 
-        # CANDADO ACTIVO: Forzar Descanso a los que llegaron al límite, sin importar NADA MÁS.
+        # CANDADO ACTIVO: Forzar Descanso
         for p in INTEGRANTES:
             if df.at[p, ds] == "" and necesita_descanso(p):
                 df.at[p, ds] = 'D'
@@ -169,9 +168,8 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 if not (p == "JUAN CAMILO PEREZ" and wd == 3): 
                     df.at[p, ds] = "L"
 
-        # 5. REPARTIR NOCHES (CON FILTRO ESTRICTO DE FATIGA)
+        # 5. REPARTIR NOCHES
         for _ in range(max(0, cuota_n)):
-            # Solo consideramos a los que NO están cansados (el candado los saca)
             disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
             disp = [p for p in disp if 'N' not in turno_en_dia(p, d-2)]
             
@@ -194,7 +192,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 turnos_totales[elegido] += 1; noches_totales[elegido] += 1
                 if es_finde_o_festivo: finde_totales[elegido] += 1
 
-        # 6. REPARTIR CORRIDOS (CON FILTRO ESTRICTO DE FATIGA)
+        # 6. REPARTIR CORRIDOS
         for _ in range(max(0, cuota_c)):
             disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
             
@@ -219,7 +217,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
     return df
 
 # --- INTERFAZ ---
-st.title("🏥 Gestor de Turnos (Anti-Fatiga Estricto)")
+st.title("🏥 Gestor de Turnos (Oficial)")
 
 with st.sidebar:
     st.header("1. Cargar Datos")
@@ -238,21 +236,46 @@ if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
     dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
     st.dataframe(res.style.applymap(aplicar_colores, subset=[str(d) for d in range(1, dias_en_mes + 1)]), use_container_width=True)
     
+    # --- AQUI EMPIEZA LA MAGIA DEL DISEÑO EXCEL ---
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         res.to_excel(writer, index=True, sheet_name='Turnos')
-        wb = writer.book; ws = writer.sheets['Turnos']
+        wb = writer.book
+        ws = writer.sheets['Turnos']
+        
+        # Inmovilizar el nombre y los días para que no se pierdan al hacer scroll
         ws.freeze_panes(1, 1)
-        fmt_v = wb.add_format({'bg_color': '#d9ead3'}); fmt_r = wb.add_format({'bg_color': '#f4cccc'})
-        fmt_az = wb.add_format({'bg_color': '#cfe2f3'}); fmt_am = wb.add_format({'bg_color': '#fff2cc'})
-        ws.set_column(0, 0, 25); ws.set_column(1, dias_en_mes, 4)
+        
+        # Paleta de formatos con BORDES y CENTRADO
+        base_fmt = {'border': 1, 'align': 'center', 'valign': 'vcenter'}
+        fmt_v = wb.add_format({**base_fmt, 'bg_color': '#d9ead3'}) # L, D
+        fmt_r = wb.add_format({**base_fmt, 'bg_color': '#f4cccc'}) # P
+        fmt_az = wb.add_format({**base_fmt, 'bg_color': '#cfe2f3'}) # N
+        fmt_am = wb.add_format({**base_fmt, 'bg_color': '#fff2cc'}) # C
+        fmt_default = wb.add_format(base_fmt)
+        
+        # Formatos especiales para títulos y nombres
+        fmt_headers = wb.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#e0e0e0'})
+        fmt_names = wb.add_format({'bold': True, 'border': 1, 'align': 'left', 'valign': 'vcenter'})
+        
+        # Ajustar anchos de columna
+        ws.set_column(0, 0, 25, fmt_names) # Nombres anchos
+        ws.set_column(1, dias_en_mes, 4, fmt_default) # Días ajustados a las letras
+        ws.set_column(dias_en_mes + 1, dias_en_mes + 3, 16, fmt_default) # Columnas de totales más anchas
+        
+        # Reescribir el interior con los colores bonitos
         for r_idx, (idx, row) in enumerate(res.iterrows()):
             for c_idx, val in enumerate(row):
-                f = None
+                f = fmt_default
                 if val in ['L', 'D']: f = fmt_v
                 elif val == 'P': f = fmt_r
                 elif 'N' in str(val): f = fmt_az
                 elif 'C' in str(val): f = fmt_am
                 ws.write(r_idx + 1, c_idx + 1, val, f)
+                
+        # Reescribir los encabezados superiores (Días y Títulos)
+        ws.write(0, 0, "INTEGRANTES", fmt_headers)
+        for col_num, col_name in enumerate(res.columns):
+            ws.write(0, col_num + 1, col_name, fmt_headers)
+            
     st.download_button("📥 Descargar Excel", output.getvalue(), f"Turnos_{mes_sel}.xlsx", use_container_width=True)
-    
