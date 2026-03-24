@@ -13,8 +13,8 @@ st.set_page_config(page_title="Gestor de Instrumentación", layout="wide")
 INTEGRANTES = [
     "GERLIS DOMINGUEZ", "ANGIE BERNAL", "JHON RIOS", "MARCELA CASTRO",
     "ZARIANA REYES", "IVETTE VALENCIA", "GINELAP", "ANA ESCOBAR",
-    "JUAN CAMILO PEREZ", "ERNESTO MUSKUS", "RANCES OSPINO", 
-    "KELLY JOHANA JURADO", "JOAN SEBASTIAN AGUDELO"
+    "JUAN CAMILO PEREZ", "ERNESTO MUSKUS", "RANCES ARGUMEDO", 
+    "KELLY CAUSIL", "JOAN CARMONA"
 ]
 
 def es_festivo(dia, mes, ano):
