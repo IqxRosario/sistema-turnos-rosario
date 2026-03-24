@@ -120,31 +120,31 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
             if 'N' in turno_en_dia(p, d-1): df.at[p, ds] = 'P'
 
         # 2. ASIGNACIONES FIJAS BLINDADAS (PRIORIDAD 2)
-        # Jhon: Noche los Martes
         if wd == 1 and df.at["JHON RIOS", ds] == "":
             df.at["JHON RIOS", ds] = "N"
             cuota_n -= 1; turnos_totales["JHON RIOS"] += 1; noches_totales["JHON RIOS"] += 1
-        # Angie: Corrido los Miércoles
         if wd == 2 and df.at["ANGIE BERNAL", ds] == "":
             df.at["ANGIE BERNAL", ds] = "C"
             cuota_c -= 1; turnos_totales["ANGIE BERNAL"] += 1
 
-        # 3. SUGERENCIAS Y LIBRES CONFIGURADOS
+        # 3. LIBRES FIJOS (PRIORIDAD 3 - Leídos de Configuración)
+        for p in INTEGRANTES:
+            if df.at[p, ds] == "" and wd in config_dict.get(p, []):
+                # Excepción Camilo Jueves: se deja vacío para ver si sugerencias lo ocupa o queda libre
+                if not (p == "JUAN CAMILO PEREZ" and wd == 3): 
+                    df.at[p, ds] = "L"
+
+        # 4. SUGERENCIAS (PRIORIDAD 4)
         for p in INTEGRANTES:
             if df.at[p, ds] != "": continue
-            
             req = sugerencias_dict.get(p, {}).get(ds)
             if req:
                 tl = 'C' if ('C' in req and 'P' not in req) else ('N' if ('N' in req and 'P' not in req) else req)
                 df.at[p, ds] = tl
                 if tl == 'N': cuota_n -= 1; noches_totales[p] += 1; turnos_totales[p] += 1
                 if tl == 'C': cuota_c -= 1; turnos_totales[p] += 1
-                continue
-            
-            if wd in config_dict.get(p, []):
-                if not (p == "JUAN CAMILO PEREZ" and wd == 3 and cuota_c > 0): df.at[p, ds] = "L"
 
-        # 4. REPARTIR NOCHES
+        # 5. REPARTIR NOCHES
         for _ in range(max(0, cuota_n)):
             disp = [p for p in INTEGRANTES if df.at[p, ds] == "" and not necesita_descanso(p)]
             disp = [p for p in disp if 'N' not in turno_en_dia(p, d-2)]
@@ -156,7 +156,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 random.shuffle(disp); disp.sort(key=lambda x: (noches_totales[x], racha_actual(x) >= 2, turnos_totales[x]))
                 elegido = disp[0]; df.at[elegido, ds] = "N"; turnos_totales[elegido] += 1; noches_totales[elegido] += 1
 
-        # 5. REPARTIR CORRIDOS
+        # 6. REPARTIR CORRIDOS
         for _ in range(max(0, cuota_c)):
             disp = [p for p in INTEGRANTES if df.at[p, ds] == "" and not necesita_descanso(p)]
             if not disp: disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
@@ -165,7 +165,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 disp.sort(key=lambda x: (racha_actual(x) >= 2, turnos_totales[x], racha_actual(x)))
                 elegido = disp[0]; df.at[elegido, ds] = "C"; turnos_totales[elegido] += 1
 
-        # 6. RELLENAR
+        # 7. RELLENAR CON DESCANSO
         for p in INTEGRANTES:
             if df.at[p, ds] == "": df.at[p, ds] = "D"
 
@@ -175,7 +175,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
     return df
 
 # --- INTERFAZ ---
-st.title("🏥 Gestor de Turnos (Corrección Blindada)")
+st.title("🏥 Gestor de Turnos (Prioridad Total)")
 
 with st.sidebar:
     st.header("1. Cargar Datos")
