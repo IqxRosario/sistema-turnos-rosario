@@ -6,7 +6,7 @@ import random
 import io
 import holidays
 import re
-import xlsxwriter  # <--- NUEVA HERRAMIENTA PARA DIBUJAR EL EXCEL
+import xlsxwriter
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Gestor de Instrumentación", layout="wide")
@@ -182,3 +182,95 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
 
             if not disp_segura: 
                 disp_segura = [p for p in disp if m_wd not in config_dict.get(p, [])] if d < dias_mes else disp
+                if not disp_segura: disp_segura = disp 
+            
+            if disp_segura:
+                random.shuffle(disp_segura)
+                if es_finde_o_festivo: disp_segura.sort(key=lambda x: (noches_totales[x], finde_totales[x], turnos_totales[x]))
+                else: disp_segura.sort(key=lambda x: (noches_totales[x], turnos_totales[x]))
+                
+                elegido = disp_segura[0]; df.at[elegido, ds] = "N"
+                turnos_totales[elegido] += 1; noches_totales[elegido] += 1
+                if es_finde_o_festivo: finde_totales[elegido] += 1
+
+        # 6. REPARTIR CORRIDOS
+        for _ in range(max(0, cuota_c)):
+            disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
+            
+            disp_segura = [p for p in disp if not arruina_corrido_futuro(p, d)]
+            if not disp_segura: disp_segura = disp
+            
+            if disp_segura:
+                random.shuffle(disp_segura)
+                if es_finde_o_festivo: disp_segura.sort(key=lambda x: (finde_totales[x], turnos_totales[x]))
+                else: disp_segura.sort(key=lambda x: (turnos_totales[x], racha_actual(x)))
+                
+                elegido = disp_segura[0]; df.at[elegido, ds] = "C"; turnos_totales[elegido] += 1
+                if es_finde_o_festivo: finde_totales[elegido] += 1
+
+        # 7. RELLENAR CON DESCANSO
+        for p in INTEGRANTES:
+            if df.at[p, ds] == "": df.at[p, ds] = "D"
+
+    df['TOTAL TURNOS'] = df.apply(lambda r: sum(1 for c in df.columns if any(t in str(r[c]) for t in ['C', 'N'])), axis=1)
+    df['TOTAL NOCHES'] = df.apply(lambda r: noches_totales[r.name], axis=1)
+    df['FINES DE SEMANA'] = df.apply(lambda r: finde_totales[r.name], axis=1)
+    return df
+
+# --- INTERFAZ ---
+st.title("🏥 Gestor de Turnos (Diseño Blindado)")
+
+with st.sidebar:
+    st.header("1. Cargar Datos")
+    archivo_previo = st.file_uploader("Excel Mes Anterior:", type=['xlsx', 'csv'])
+    link_sheet = st.text_input("Link Sugerencias:", "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=0#gid=0")
+    if link_sheet.startswith("http"): st.link_button("📝 Abrir Sugerencias", link_sheet, use_container_width=True)
+    link_config = st.text_input("Link Configuración:", "")
+    ano_sel = st.number_input("Año:", min_value=2024, value=datetime.now().year)
+    mes_sel = st.selectbox("Mes:", range(1, 13), index=datetime.now().month-1)
+
+if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
+    hist = procesar_historial_empalme(archivo_previo)
+    sug = procesar_sugerencias(link_sheet); conf = procesar_configuracion(link_config)
+    res = generar_cuadro_equitativo(mes_sel, ano_sel, hist, sug, conf)
+    
+    dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
+    
+    # 1. Mostrar en la web
+    st.dataframe(res.style.map(aplicar_colores, subset=[str(d) for d in range(1, dias_en_mes + 1)]), use_container_width=True)
+    
+    # 2. Generar el Excel con colores (xlsxwriter)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        wb = writer.book
+        ws = wb.add_worksheet('Turnos')
+        ws.freeze_panes(1, 1) 
+        
+        base_fmt = {'border': 1, 'align': 'center', 'valign': 'vcenter'}
+        fmt_v = wb.add_format({**base_fmt, 'bg_color': '#d9ead3'}) 
+        fmt_r = wb.add_format({**base_fmt, 'bg_color': '#f4cccc'}) 
+        fmt_az = wb.add_format({**base_fmt, 'bg_color': '#cfe2f3'}) 
+        fmt_am = wb.add_format({**base_fmt, 'bg_color': '#fff2cc'}) 
+        fmt_default = wb.add_format(base_fmt)
+        fmt_headers = wb.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#e0e0e0'})
+        fmt_names = wb.add_format({'bold': True, 'border': 1, 'align': 'left', 'valign': 'vcenter'})
+        
+        ws.set_column(0, 0, 25) 
+        ws.set_column(1, dias_en_mes, 4) 
+        ws.set_column(dias_en_mes + 1, dias_en_mes + 3, 16) 
+        
+        ws.write(0, 0, "INTEGRANTES", fmt_headers)
+        for col_num, col_name in enumerate(res.columns):
+            ws.write(0, col_num + 1, str(col_name), fmt_headers)
+            
+        for r_idx, (idx, row) in enumerate(res.iterrows()):
+            ws.write(r_idx + 1, 0, str(idx), fmt_names) 
+            for c_idx, val in enumerate(row):
+                f = fmt_default
+                if val in ['L', 'D']: f = fmt_v
+                elif val == 'P': f = fmt_r
+                elif 'N' in str(val): f = fmt_az
+                elif 'C' in str(val): f = fmt_am
+                ws.write(r_idx + 1, c_idx + 1, val, f)
+                
+    st.download_button("📥 Descargar Excel", output.getvalue(), f"Turnos_{mes_sel}.xlsx", use_container_width=True)
