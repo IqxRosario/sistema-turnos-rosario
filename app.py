@@ -11,17 +11,6 @@ import xlsxwriter
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Gestor de Instrumentación", layout="wide")
 
-# --- MAGIA ANTI-ERRORES ---
-# Este código oculta la "flechita tramposa" de Streamlit para obligar al usuario a usar el botón gigante.
-st.markdown(
-    """
-    <style>
-    [data-testid="stElementToolbar"] {display: none;}
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
 INTEGRANTES = [
     "GERLIS DOMINGUEZ", "ANGIE BERNAL", "JHON RIOS", "MARCELA CASTRO",
     "ZARIANA REYES", "IVETTE VALENCIA", "GINELAP", "ANA ESCOBAR",
@@ -40,8 +29,9 @@ def aplicar_colores(v):
     if 'C' in str(v): return 'background-color: #fff2cc; color: #000000;' 
     return ''
 
-# --- LECTORES CON CACHÉ (RÁPIDOS) ---
-@st.cache_data(ttl=60)
+# --- LECTORES (AHORA CON MEMORIA CACHÉ PARA SER MÁS RÁPIDOS) ---
+
+@st.cache_data(ttl=60) # Memoriza por 60 segundos para no saturar el internet
 def procesar_historial_empalme(file):
     historial = {p: ["", "", ""] for p in INTEGRANTES} 
     if not file: return historial
@@ -253,7 +243,7 @@ if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
     # Mostrar tabla visual
     st.dataframe(res.style.map(aplicar_colores, subset=[str(d) for d in range(1, dias_en_mes + 1)]), use_container_width=True)
     
-    # Preparar el archivo de Excel real con colores (xlsxwriter)
+    # Preparar el archivo de Excel real (NO el CSV tramposo de Streamlit)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         wb = writer.book
@@ -287,11 +277,11 @@ if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
                 elif 'C' in str(val): f = fmt_am
                 ws.write(r_idx + 1, c_idx + 1, val, f)
     
-    # BOTÓN CORRECTO Y BLINDADO PARA DESCARGAR EXCEL A COLOR
+    # ¡AQUÍ ESTÁ EL BOTÓN CORRECTO Y BLINDADO PARA DESCARGAR EXCEL!
     st.download_button(
         label="📥 Descargar Excel", 
         data=output.getvalue(), 
         file_name=f"Turnos_{mes_sel}.xlsx", 
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", # Etiqueta oficial de Excel
         use_container_width=True
     )
