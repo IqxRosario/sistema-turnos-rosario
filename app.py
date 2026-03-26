@@ -237,8 +237,11 @@ with st.sidebar:
     link_config = st.text_input("Link Configuración:", "")
     ano_sel = st.number_input("Año:", min_value=2024, value=datetime.now().year)
     mes_sel = st.selectbox("Mes:", range(1, 13), index=datetime.now().month-1)
+    semilla = st.number_input("Semilla:", min_value=0, value=42) # <-- Aquí está la semilla agregada
 
 if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
+    random.seed(semilla) # <-- Aquí se aplica la semilla
+    
     hist = procesar_historial_empalme(archivo_previo)
     sug = procesar_sugerencias(link_sheet); conf = procesar_configuracion(link_config)
     res = generar_cuadro_equitativo(mes_sel, ano_sel, hist, sug, conf)
@@ -290,3 +293,4 @@ if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
+    
