@@ -48,7 +48,8 @@ def procesar_historial_empalme(file):
                 nom = str(r[col_nombre]).strip().upper() if col_nombre else str(r.name).strip().upper()
                 if "GINELAP" in nom: nom = "GINELAP"
                 if nom in INTEGRANTES: historial[nom] = [str(r[c]).upper() for c in ultimas_3]
-    except Exception: st.sidebar.error("Error en historial.")
+    except Exception: 
+        st.sidebar.error("Error en historial.")
     return historial
 
 @st.cache_data(ttl=60)
@@ -67,7 +68,8 @@ def procesar_sugerencias(link):
             fecha = ''.join(filter(str.isdigit, str(r.get('FECHA',''))))
             sol = str(r.get('SOLICITUD','')).strip().upper()
             if nom in INTEGRANTES and fecha and sol != 'NAN': sugerencias[nom][fecha] = sol
-    except: st.sidebar.warning("Link Sugerencias no detectado.")
+    except: 
+        st.sidebar.warning("Link Sugerencias no detectado.")
     return sugerencias
 
 @st.cache_data(ttl=60)
@@ -86,14 +88,17 @@ def procesar_configuracion(link):
             dias_str = str(r.get('DIAS_LIBRES',''))
             if nom in INTEGRANTES and dias_str and dias_str.lower() != 'nan':
                 libres_fijos[nom] = [int(x.strip()) for x in dias_str.split(',') if x.strip().isdigit()]
-    except: st.sidebar.warning("Link Configuración no detectado.")
+    except: 
+        st.sidebar.warning("Link Configuración no detectado.")
     return libres_fijos
 
 # --- MOTOR ---
 def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, config_dict):
     dias_mes = calendar.monthrange(ano, mes)[1]
     df = pd.DataFrame(index=INTEGRANTES, columns=[str(d) for d in range(1, dias_mes + 1)]).fillna("")
-    turnos_totales = {p: 0 for p in INTEGRANTES}; noches_totales = {p: 0 for p in INTEGRANTES}; finde_totales = {p: 0 for p in INTEGRANTES}
+    turnos_totales = {p: 0 for p in INTEGRANTES}
+    noches_totales = {p: 0 for p in INTEGRANTES}
+    finde_totales = {p: 0 for p in INTEGRANTES}
 
     def turno_en_dia(persona, dia_req):
         if dia_req > 0: return str(df.at[persona, str(dia_req)])
@@ -282,6 +287,6 @@ if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
         label="📥 Descargar Excel", 
         data=output.getvalue(), 
         file_name=f"Turnos_{mes_sel}.xlsx", 
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", # Etiqueta oficial de Excel
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
