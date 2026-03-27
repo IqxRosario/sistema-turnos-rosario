@@ -207,13 +207,24 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                     df.at[p, ds] = "L"
                     continue
 
-            # 3. Sugerencias (Tercera Prioridad)
-            if req:
-                tl = 'C' if ('C' in req and 'P' not in req) else ('N' if ('N' in req and 'P' not in req) else req)
-                df.at[p, ds] = tl
-                if tl == 'N': noches_totales[p] += 1; turnos_totales[p] += 1
-                if tl == 'C': turnos_totales[p] += 1
-                if tl in ['C', 'N'] and es_finde_o_festivo: finde_totales[p] += 1
+            # 3. Libres Fijos de Configuración (JERARQUÍA FLEXIBLE)
+            if wd in config_dict.get(p, []):
+                # --- NUEVA REGLA ESPECIAL PARA JUAN CAMILO ---
+                if p == "JUAN CAMILO PEREZ":
+                    # Si Camilo tiene una sugerencia (como C6 un jueves), se le asigna y NO se pone 'L'
+                    if req:
+                        tl = 'C' if ('C' in req and 'P' not in req) else ('N' if ('N' in req and 'P' not in req) else req)
+                        df.at[p, ds] = tl
+                        if tl == 'N': noches_totales[p] += 1; turnos_totales[p] += 1
+                        if tl == 'C': turnos_totales[p] += 1
+                    else:
+                        # Si no hay sugerencia, el sistema lo deja VACÍO en lugar de poner 'L'
+                        # Esto permite que en la FASE 2 el sistema le pueda asignar una 'N' 
+                        # o un 'C' si hace falta personal, tratando el 'L' como una preferencia, no un bloqueo.
+                        pass 
+                else:
+                    # Regla normal para el resto del equipo (Bloqueo total)
+                    df.at[p, ds] = "L"
                 continue
 
             # 4. Asignaciones Fijas (Cuarta Prioridad)
@@ -228,10 +239,12 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 if es_finde_o_festivo: finde_totales[p] += 1
 
     # --- FASE 2: REPARTICIÓN ---
-    def no_puede_hacer_noche(persona, dia_actual):
+   def no_puede_hacer_noche(persona, dia_actual):
         if dia_actual < dias_mes:
             turno_manana = str(df.at[persona, str(dia_actual + 1)])
-            if any(x in turno_manana for x in ['L', 'V', 'C', 'N']): return True
+            # Si mañana es Vacaciones o un Libre de alguien que NO es Camilo, bloqueamos Noche hoy
+            if any(x in turno_manana for x in ['V', 'P']): return True
+            if 'L' in turno_manana and persona != "JUAN CAMILO PEREZ": return True
         return False
 
     for d in range(1, dias_mes + 1):
