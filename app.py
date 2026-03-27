@@ -111,14 +111,23 @@ def procesar_configuracion(link):
         
         col_nom = next((c for c in df_conf.columns if 'NOMBRE' in c), None)
         col_dias = next((c for c in df_conf.columns if 'DIA' in c or 'LIBRE' in c or 'FIJO' in c), None)
-        col_vac = next((c for c in df_conf.columns if 'VACACION' in c), None)
+        col_vac = next((c for c in df_conf.columns if 'VACACION' in c or 'VACA' in c), None)
         
         if col_nom:
             for _, r in df_conf.iterrows():
-                nom = normalizar_texto(r[col_nom])
-                if "GINELAP" in nom: nom = "GINELAP"
+                nom_sheet = normalizar_texto(r[col_nom])
                 
-                if nom in INTEGRANTES:
+                # BUSCADOR INTELIGENTE DE NOMBRES
+                nom_real = None
+                for p in INTEGRANTES:
+                    # Si el nombre del excel está dentro del oficial (Ej: "CAMILO" en "JUAN CAMILO PEREZ")
+                    if nom_sheet in p or p in nom_sheet: 
+                        nom_real = p
+                        break
+                if "GINELAP" in nom_sheet: nom_real = "GINELAP"
+                
+                if nom_real:
+                    # 1. Leer libres fijos
                     if col_dias and str(r[col_dias]).lower() not in ['nan', 'none', '']:
                         dias_str = normalizar_texto(r[col_dias])
                         dias_asignados = []
@@ -134,19 +143,20 @@ def procesar_configuracion(link):
                                 elif 1 <= n <= 6: dias_asignados.append(n - 1)
                                 elif n == 0: dias_asignados.append(0)
                         
-                        libres_fijos[nom] = list(set(dias_asignados))
+                        libres_fijos[nom_real] = list(set(dias_asignados))
                     
+                    # 2. Leer vacaciones
                     if col_vac and str(r[col_vac]).lower() not in ['nan', 'none', '']:
                         vac_str = str(r[col_vac])
                         rango = vac_str.split('-')
                         if len(rango) == 2 and rango[0].strip().isdigit() and rango[1].strip().isdigit():
                             inicio, fin = int(rango[0].strip()), int(rango[1].strip())
-                            vacaciones[nom] = list(range(inicio, fin + 1))
+                            vacaciones[nom_real] = list(range(inicio, fin + 1))
                         else:
-                            vacaciones[nom].extend([int(x) for x in re.findall(r'\d+', vac_str)])
+                            vacaciones[nom_real].extend([int(x) for x in re.findall(r'\d+', vac_str)])
                             
     except Exception as e: 
-        st.sidebar.warning(f"Error leyendo la Configuración: {e}")
+        st.sidebar.error(f"Error CRÍTICO leyendo la Configuración: {e}. Revisa el link y permisos.")
     return libres_fijos, vacaciones
 
 # --- MOTOR ---
