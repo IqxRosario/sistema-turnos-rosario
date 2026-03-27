@@ -146,9 +146,13 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
             manana_dt = datetime(ano, mes, dia_actual + 1)
             wd_manana = manana_dt.weekday()
             turno_manana = str(df.at[persona, str(dia_actual + 1)])
+            # Bloqueo por Vacaciones o Posturno pre-asignado
             if any(x in turno_manana for x in ['V', 'P']): return True
-            if 'L' in turno_manana:
-                if persona == "JUAN CAMILO PEREZ" and wd_manana == 3: return False
+            # Bloqueo por Libres Fijos
+            if wd_manana in config_dict.get(persona, []):
+                # Excepción: Juan Camilo permite noche antes de su Jueves flexible
+                if persona == "JUAN CAMILO PEREZ" and wd_manana == 3:
+                    return False
                 return True
         return False
 
@@ -161,12 +165,13 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 continue
             
             req = sugerencias_dict.get(p, {}).get(ds)
+            # Regla de Libres Fijos
             if wd in config_dict.get(p, []):
                 if p == "JUAN CAMILO PEREZ":
-                    if wd == 1: 
+                    if wd == 1: # Martes Rígido
                         df.at[p, ds] = "L"
                         continue
-                    elif wd == 3:
+                    elif wd == 3: # Jueves Flexible
                         if req:
                             tl = 'C' if ('C' in req and 'P' not in req) else ('N' if ('N' in req and 'P' not in req) else req)
                             df.at[p, ds] = tl
@@ -201,27 +206,26 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
             if 'N' in turno_en_dia(p, d-1) and df.at[p, ds] == "": df.at[p, ds] = 'P'
             if df.at[p, ds] == "" and racha_actual(p, d) >= 3: df.at[p, ds] = 'D'
 
+        # Noches
         for _ in range(max(0, cuota_n)):
             disp = [p for p in INTEGRANTES if df.at[p, ds] == "" and 'N' not in turno_en_dia(p, d-2) and not no_puede_hacer_noche(p, d)]
             if disp:
                 rng.shuffle(disp)
                 disp.sort(key=lambda x: (noches_totales[x], turnos_totales[x]))
-                df.at[disp[0], ds] = "N"
-                turnos_totales[disp[0]] += 1
-                noches_totales[disp[0]] += 1
+                df.at[disp[0], ds] = "N"; turnos_totales[disp[0]] += 1; noches_totales[disp[0]] += 1
 
+        # Corridos
         for _ in range(max(0, cuota_c)):
             disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
             if disp:
                 rng.shuffle(disp)
                 disp.sort(key=lambda x: (turnos_totales[x], racha_actual(x, d)))
-                df.at[disp[0], ds] = "C"
-                turnos_totales[disp[0]] += 1
+                df.at[disp[0], ds] = "C"; turnos_totales[disp[0]] += 1
 
         for p in INTEGRANTES:
             if df.at[p, ds] == "": df.at[p, ds] = "D"
 
-    # CONTADORES FINALES
+    # CONTADORES EXACTOS
     df['TOTAL CORRIDOS'] = df.apply(lambda r: sum(1 for c in df.columns if 'C' in str(r[c]) and c.isdigit()), axis=1)
     df['TOTAL NOCHES'] = df.apply(lambda r: sum(1 for c in df.columns if 'N' in str(r[c]) and c.isdigit()), axis=1)
     df['TOTAL TURNOS'] = df['TOTAL CORRIDOS'] + df['TOTAL NOCHES']
@@ -229,8 +233,9 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
     def contar_findes(fila):
         conteo = 0
         for d in range(1, dias_mes + 1):
-            if (datetime(ano, mes, d).weekday() >= 5 or es_festivo(d, mes, ano)) and any(t in str(fila[str(d)]) for t in ['C', 'N']):
-                conteo += 1
+            if (datetime(ano, mes, d).weekday() >= 5 or es_festivo(d, mes, ano)):
+                if any(t in str(fila[str(d)]) for t in ['C', 'N']):
+                    conteo += 1
         return conteo
     df['FINES DE SEMANA'] = df.apply(contar_findes, axis=1)
     return df
@@ -247,29 +252,15 @@ with st.sidebar:
     mostrar_rayos_x = st.checkbox("🔍 Activar Diagnóstico (Rayos X)")
 
 if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
-    hist = procesar_historial_empalme(archivo_previo)
-    sug = procesar_sugerencias(link_sheet)
+    hist, sug = procesar_historial_empalme(archivo_previo), procesar_sugerencias(link_sheet)
     conf, vacs = procesar_configuracion(link_config)
-    
     if mostrar_rayos_x:
-        st.warning("🕵️ DIAGNÓSTICO:")
-        st.write("🏖️ Vacaciones:", vacs)
-        st.write("🛑 Libres:", conf)
-        st.stop()
-        
+        st.warning("🕵️ DIAGNÓSTICO:"); st.write("🏖️ Vacaciones:", vacs); st.write("🛑 Libres:", conf); st.stop()
     res = generar_cuadro_equitativo(mes_sel, ano_sel, hist, sug, conf, vacs, semilla)
     dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
-    
     st.dataframe(res.style.map(aplicar_colores, subset=[str(d) for d in range(1, dias_en_mes + 1)]), use_container_width=True)
     
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         res.to_excel(writer, sheet_name='Turnos')
-        
-    st.download_button(
-        label="📥 Descargar Excel", 
-        data=output.getvalue(), 
-        file_name=f"Turnos_{mes_sel}.xlsx", 
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
-        use_container_width=True
-    )
+    st.download_button(label="📥 Descargar Excel", data=output.getvalue(), file_name=f"Turnos_{mes_sel}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
