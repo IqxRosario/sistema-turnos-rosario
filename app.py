@@ -207,7 +207,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
 
             req = sugerencias_dict.get(p, {}).get(ds)
 
-          # 3. Libres Fijos (Jerarquía con excepción para Camilo)
+         # 3. Libres Fijos (Jerarquía con excepción para Camilo)
             if wd in config_dict.get(p, []):
                 if p == "JUAN CAMILO PEREZ":
                     # EL MARTES (wd 1) ES SAGRADO: Se pone 'L' de una vez
@@ -227,14 +227,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                     # Regla normal para el resto del equipo
                     df.at[p, ds] = "L"
                     continue
-                else:
-                    # Regla normal para el resto
-                    df.at[p, ds] = "L"
-                    continue
-                else:
-                    df.at[p, ds] = "L"
-                    continue
-
+    
             # Sugerencias (Si no hay libre fijo)
             if req:
                 tl = 'C' if ('C' in req and 'P' not in req) else ('N' if ('N' in req and 'P' not in req) else req)
