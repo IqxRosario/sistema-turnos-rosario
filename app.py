@@ -19,7 +19,6 @@ INTEGRANTES = [
     "KELLY CAUSIL", "JOAN CARMONA"
 ]
 
-# Escala del usuario: Lunes: 0, Martes: 1, ..., Domingo: 6
 DIAS_MAP = {
     'LUNES': 0, 'MARTES': 1, 'MIERCOLES': 2, 'JUEVES': 3, 'VIERNES': 4, 'SABADO': 5, 'DOMINGO': 6
 }
@@ -116,7 +115,7 @@ def procesar_configuracion(link):
     except: pass
     return libres_fijos, vacaciones
 
-# --- MOTOR CON ROTACIÓN ---
+# --- MOTOR PRINCIPAL ---
 def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, config_dict, vacaciones_dict, semilla):
     rng = random.Random(semilla)
     dias_mes = calendar.monthrange(ano, mes)[1]
@@ -170,7 +169,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 if tl == 'C': turnos_totales[p] += 1
                 if es_festivo(d, mes, ano): festivos_trabajados[p] += 1
 
-    # FASE 2: REPARTICIÓN CON FILTROS DE ROTACIÓN
+    # FASE 2: REPARTICIÓN CON ROTACIÓN
     for d in range(1, dias_mes + 1):
         ds, wd = str(d), datetime(ano, mes, d).weekday()
         es_fest = es_festivo(d, mes, ano)
@@ -185,14 +184,12 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
             if df.at[p, ds] == "" and sum(1 for x in range(d-3, d) if any(t in turno_en_dia(p, x) for t in ['C', 'N'])) >= 3:
                 df.at[p, ds] = 'D'
 
-        # Repartir Noches
         for _ in range(max(0, cuota_n)):
             disp = [p for p in INTEGRANTES if df.at[p, ds] == "" and 'N' not in turno_en_dia(p, d-2) and not no_puede_hacer_noche(p, d)]
-            if es_finde: # Rotación Sáb/Dom
+            if es_finde:
                 filt = [p for p in disp if not trabajo_mismo_dia_semana_anterior(p, d)]
                 if filt: disp = filt
-            if es_fest: # Rotación Festivos
-                disp.sort(key=lambda x: festivos_trabajados[x])
+            if es_fest: disp.sort(key=lambda x: festivos_trabajados[x])
             
             if disp:
                 rng.shuffle(disp)
@@ -200,18 +197,16 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 df.at[disp[0], ds] = "N"; turnos_totales[disp[0]] += 1; noches_totales[disp[0]] += 1
                 if es_fest: festivos_trabajados[disp[0]] += 1
 
-        # Repartir Corridos
         for _ in range(max(0, cuota_c)):
             disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
             if es_finde:
                 filt = [p for p in disp if not trabajo_mismo_dia_semana_anterior(p, d)]
                 if filt: disp = filt
-            if es_fest:
-                disp.sort(key=lambda x: festivos_trabajados[x])
+            if es_fest: disp.sort(key=lambda x: festivos_trabajados[x])
             
             if disp:
                 rng.shuffle(disp)
-                disp.sort(key=lambda x: (turnos_totales[x]))
+                disp.sort(key=lambda x: turnos_totales[x])
                 df.at[disp[0], ds] = "C"; turnos_totales[disp[0]] += 1
                 if es_fest: festivos_trabajados[disp[0]] += 1
 
@@ -224,67 +219,57 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
     df['TOTAL TURNOS'] = df['TOTAL CORRIDOS'] + df['TOTAL NOCHES']
     df['FINES DE SEMANA'] = df.apply(lambda r: sum(1 for d in range(1, dias_mes+1) if (datetime(ano, mes, d).weekday() >= 5 or es_festivo(d, mes, ano)) and any(t in str(r[str(d)]) for t in ['C', 'N'])), axis=1)
     return df
-    
+
+# --- FUNCIÓN DE OPTIMIZACIÓN (TU NUEVA FUNCIÓN) ---
 def generar_mejor_escenario(n, mes, ano, hist, sug, conf, vacs):
     resultados = []
-
+    barra_progreso = st.progress(0)
     for s in range(n):
-        df = generar_cuadro_equitativo(
-            mes, ano, hist, sug, conf, vacs, s
-        )
-
+        df = generar_cuadro_equitativo(mes, ano, hist, sug, conf, vacs, s)
+        # Score basado en la equidad (desviación estándar)
         score = (
             df["TOTAL TURNOS"].std() +
             df["TOTAL NOCHES"].std() * 1.5
         )
-
         resultados.append((score, df))
-
+        barra_progreso.progress((s + 1) / n)
+    
     resultados.sort(key=lambda x: x[0])
     return resultados[0][1]
-# --- INTERFAZ ---
-st.title("🏥 Gestor de Turnos (Equidad Total)")
 
+# --- INTERFAZ ---
+st.title("🏥 Gestor de Turnos (Optimizador de Equidad)")
 with st.sidebar:
     st.header("1. Carga de Datos")
     archivo_previo = st.file_uploader("Excel Mes Anterior:", type=['xlsx', 'csv'])
-    
-    # --- BOTÓN DE SUGERENCIAS ---
     link_sheet = st.text_input("Link Sugerencias:", "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=0#gid=0")
-    if link_sheet:
-        st.link_button("📝 Abrir Sugerencias (Google)", link_sheet, use_container_width=True)
-    
-    # --- BOTÓN DE CONFIGURACIÓN ---
     link_config = st.text_input("Link Configuración:", "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=1679804429#gid=1679804429")
-    if link_config:
-        st.link_button("⚙️ Abrir Configuración (Google)", link_config, use_container_width=True)
     
-    st.divider()
-    
-    st.header("2. Parámetros del Mes")
-    ano_sel = st.number_input("Año:", min_value=2024, value=2026) # Actualizado a 2026
-    mes_sel = st.selectbox("Mes:", range(1, 13), index=2) # Marzo por defecto
-    semilla = st.number_input("Semilla (Variar para cambiar el azar):", min_value=0, value=0)
-    
-    st.divider()
-    mostrar_rx = st.checkbox("🔍 Activar Diagnóstico (Rayos X)")
+    st.header("2. Parámetros")
+    ano_sel = st.number_input("Año:", min_value=2024, value=2026)
+    mes_sel = st.selectbox("Mes:", range(1, 13), index=2) # Marzo
+    iteraciones = st.slider("Número de simulaciones (n):", 10, 100, 30)
+    mostrar_rx = st.checkbox("🔍 Rayos X")
 
-if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
+if st.button("🚀 GENERAR MEJOR ESCENARIO", type="primary", use_container_width=True):
     hist, sug = procesar_historial_empalme(archivo_previo), procesar_sugerencias(link_sheet)
     conf, vacs = procesar_configuracion(link_config)
+    
     if mostrar_rx:
         st.write("🏖️ Vacaciones:", vacs); st.write("🛑 Libres:", conf); st.stop()
-    res = generar_mejor_escenario(
-    30,
-    mes_sel,
-    ano_sel,
-    hist,
-    sug,
-    conf,
-    vacs
-)
-    st.dataframe(res.style.map(aplicar_colores, subset=[str(d) for d in range(1, calendar.monthrange(ano_sel, mes_sel)[1] + 1)]), use_container_width=True)
+    
+    # EJECUCIÓN DEL OPTIMIZADOR
+    with st.spinner('Simulando múltiples escenarios para encontrar el más equitativo...'):
+        res = generar_mejor_escenario(iteraciones, mes_sel, ano_sel, hist, sug, conf, vacs)
+    
+    # Mostrar resultados
+    dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
+    st.success(f"✅ Se han analizado {iteraciones} versiones. ¡Aquí tienes la más equilibrada!")
+    st.dataframe(res.style.map(aplicar_colores, subset=[str(d) for d in range(1, dias_en_mes + 1)]), use_container_width=True)
+    
+    # Botón de Descarga
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         res.to_excel(writer, sheet_name='Turnos')
-    st.download_button("📥 Descargar Excel", output.getvalue(), f"Turnos_{mes_sel}.xlsx", use_container_width=True)
+    st.download_button("📥 Descargar Excel", output.getvalue(), f"Turnos_{mes_sel}_Optimizado.xlsx", use_container_width=True)
+    
