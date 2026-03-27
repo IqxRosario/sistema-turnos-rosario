@@ -228,25 +228,20 @@ def generar_mejor_escenario(n, mes, ano, hist, sug, conf, vacs):
 
     for s in range(n):
         df = generar_cuadro_equitativo(mes, ano, hist, sug, conf, vacs, s)
-
         cargas_relativas = []
 
         for p in INTEGRANTES:
-            dias_trabajables = 0
-
-            for d in range(1, dias_mes + 1):
-                val = df.at[p, str(d)]
-                if val not in ['L', 'V']:  # Solo indisponibilidad real
-                    dias_trabajables += 1
-
+            dias_trabajables = sum(1 for d in range(1, dias_mes + 1) if df.at[p, str(d)] not in ['L', 'V'])
             if dias_trabajables > 0:
                 ocupacion = df.at[p, "TOTAL TURNOS"] / dias_trabajables
                 cargas_relativas.append(ocupacion)
 
         import numpy as np
+        # TU NUEVA FÓRMULA DE SCORE
         score = (
             np.std(cargas_relativas) * 2.0 +
-            df["TOTAL NOCHES"].std() * 2.0
+            df["TOTAL NOCHES"].std() * 2.0 +
+            df["FINES DE SEMANA"].std() * 1.5
         )
 
         resultados.append((score, df))
@@ -261,6 +256,8 @@ with st.sidebar:
     st.header("1. Carga de Datos")
     archivo_previo = st.file_uploader("Excel Mes Anterior:", type=['xlsx', 'csv'])
     link_sheet = st.text_input("Link Sugerencias:", "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=0#gid=0")
+    if link_sheet:
+        st.link_button("📝 Abrir Sugerencias (Google)", link_sheet, use_container_width=True)
     link_config = st.text_input("Link Configuración:", "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=1679804429#gid=1679804429")
     
     st.header("2. Parámetros")
