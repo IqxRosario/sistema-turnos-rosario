@@ -159,7 +159,6 @@ def procesar_configuracion(link):
         st.sidebar.error(f"Error CRÍTICO leyendo la Configuración: {e}. Revisa el link y permisos.")
     return libres_fijos, vacaciones
     
-# --- MOTOR ---
 # --- MOTOR CORREGIDO Y SIN ERRORES DE INDENTACIÓN ---
 def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, config_dict, vacaciones_dict, semilla):
     rng = random.Random(semilla)
@@ -208,14 +207,25 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
 
             req = sugerencias_dict.get(p, {}).get(ds)
 
-            # Libres Fijos (Prioridad sobre Sugerencias)
+            # 3. Libres Fijos (Jerarquía con excepción para Camilo)
             if wd in config_dict.get(p, []):
                 if p == "JUAN CAMILO PEREZ":
-                    if req:
-                        tl = 'C' if ('C' in req and 'P' not in req) else ('N' if ('N' in req and 'P' not in req) else req)
-                        df.at[p, ds] = tl
-                        if tl == 'N': noches_totales[p] += 1; turnos_totales[p] += 1
-                        if tl == 'C': turnos_totales[p] += 1
+                    # EL MARTES (wd 1) ES SAGRADO: Se pone 'L' de una vez
+                    if wd == 1:
+                        df.at[p, ds] = "L"
+                        continue
+                    # EL JUEVES (wd 3) ES FLEXIBLE: No ponemos 'L' todavía 
+                    # para que la Fase 2 pueda asignarle N, C o P si es necesario.
+                    elif wd == 3:
+                        if req: # Si hay sugerencia expresa para el jueves
+                            tl = 'C' if ('C' in req and 'P' not in req) else ('N' if ('N' in req and 'P' not in req) else req)
+                            df.at[p, ds] = tl
+                            if tl == 'N': noches_totales[p] += 1; turnos_totales[p] += 1
+                            if tl == 'C': turnos_totales[p] += 1
+                        continue
+                else:
+                    # Regla normal para el resto
+                    df.at[p, ds] = "L"
                     continue
                 else:
                     df.at[p, ds] = "L"
