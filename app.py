@@ -305,7 +305,7 @@ with st.sidebar:
     link_config = st.text_input("Link Configuración:", "")
     ano_sel = st.number_input("Año:", min_value=2024, value=datetime.now().year)
     mes_sel = st.selectbox("Mes:", range(1, 13), index=datetime.now().month-1)
-    semilla = st.number_input("Semilla:", min_value=0, value=42)
+    semilla = st.number_input("Semilla:", min_value=0, value=0)
 
 if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
     hist = procesar_historial_empalme(archivo_previo)
