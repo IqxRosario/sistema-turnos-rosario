@@ -158,7 +158,7 @@ def procesar_configuracion(link):
     except Exception as e: 
         st.sidebar.error(f"Error CRÍTICO leyendo la Configuración: {e}. Revisa el link y permisos.")
     return libres_fijos, vacaciones
-
+    
 # --- MOTOR ---
 def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, config_dict, vacaciones_dict, semilla):
     rng = random.Random(semilla)
@@ -185,21 +185,29 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
             else: break
         return streak
 
-    # ==============================================================
-    # FASE 1: PRE-LLENADO (BLINDAJE DURO EN TODO EL MES)
-    # ==============================================================
+    # --- FASE 1: PRE-LLENADO ---
     for d in range(1, dias_mes + 1):
         ds = str(d); wd = datetime(ano, mes, d).weekday()
         es_finde_o_festivo = wd >= 5 or es_festivo(d, mes, ano)
 
         for p in INTEGRANTES:
-            # 1. Vacaciones
+            # 1. Vacaciones (Prioridad Máxima)
             if d in vacaciones_dict.get(p, []):
                 df.at[p, ds] = 'V'
                 continue
 
-            # 2. Sugerencias y Excepciones
             req = sugerencias_dict.get(p, {}).get(ds)
+
+            # 2. Libres Fijos (Segunda Prioridad)
+            if wd in config_dict.get(p, []):
+                # Excepción: Permitir la sugerencia 'C' en días libres solo para Camilo
+                if p == "JUAN CAMILO PEREZ" and req and 'C' in req:
+                    pass 
+                else:
+                    df.at[p, ds] = "L"
+                    continue
+
+            # 3. Sugerencias (Tercera Prioridad)
             if req:
                 tl = 'C' if ('C' in req and 'P' not in req) else ('N' if ('N' in req and 'P' not in req) else req)
                 df.at[p, ds] = tl
@@ -208,12 +216,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 if tl in ['C', 'N'] and es_finde_o_festivo: finde_totales[p] += 1
                 continue
 
-            # 3. Libres Fijos de Configuración
-            if wd in config_dict.get(p, []):
-                df.at[p, ds] = "L"
-                continue
-
-            # 4. Asignaciones Fijas
+            # 4. Asignaciones Fijas (Cuarta Prioridad)
             if wd == 1 and p == "JHON RIOS" and df.at[p, ds] == "":
                 df.at[p, ds] = "N"
                 turnos_totales[p] += 1; noches_totales[p] += 1
@@ -224,9 +227,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 turnos_totales[p] += 1
                 if es_finde_o_festivo: finde_totales[p] += 1
 
-    # ==============================================================
-    # FASE 2: REPARTICIÓN DIARIA (EVALUANDO POSTURNOS Y BLOQUEOS)
-    # ==============================================================
+    # --- FASE 2: REPARTICIÓN ---
     def no_puede_hacer_noche(persona, dia_actual):
         if dia_actual < dias_mes:
             turno_manana = str(df.at[persona, str(dia_actual + 1)])
@@ -244,17 +245,14 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
         else: cuota_c_base = 6
         cuota_c = cuota_c_base - sum(1 for p in INTEGRANTES if 'C' in df.at[p, ds])
 
-        # 1. Posturnos ('P') obligatorios
         for p in INTEGRANTES:
             if 'N' in turno_en_dia(p, d-1) and df.at[p, ds] == "": 
                 df.at[p, ds] = 'P'
 
-        # 2. Descanso obligatorio por racha
         for p in INTEGRANTES:
             if df.at[p, ds] == "" and racha_actual(p, d) >= 3:
                 df.at[p, ds] = 'D'
 
-        # 3. Repartir Noches
         for _ in range(max(0, cuota_n)):
             disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
             disp = [p for p in disp if 'N' not in turno_en_dia(p, d-2)]
@@ -270,7 +268,6 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 turnos_totales[elegido] += 1; noches_totales[elegido] += 1
                 if es_finde_o_festivo: finde_totales[elegido] += 1
 
-        # 4. Repartir Corridos
         for _ in range(max(0, cuota_c)):
             disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
             
@@ -293,7 +290,6 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 turnos_totales[elegido] += 1
                 if es_finde_o_festivo: finde_totales[elegido] += 1
 
-        # 5. Rellenar con Descanso ('D')
         for p in INTEGRANTES:
             if df.at[p, ds] == "": df.at[p, ds] = "D"
 
