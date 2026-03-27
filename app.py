@@ -188,11 +188,21 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
     # --- FUNCIÓN DE BLOQUEO DE NOCHES (Corregida e Identada) ---
     def no_puede_hacer_noche(persona, dia_actual):
         if dia_actual < dias_mes:
+            # Calculamos qué día de la semana es mañana
+            manana_dt = datetime(ano, mes, dia_actual + 1)
+            wd_manana = manana_dt.weekday()
             turno_manana = str(df.at[persona, str(dia_actual + 1)])
-            # Si mañana es Vacaciones o Posturno, nadie hace noche hoy
+            
+            # Bloqueo por Vacaciones o Posturno (Aplica a todos)
             if any(x in turno_manana for x in ['V', 'P']): return True
-            # Si mañana es Libre, bloqueamos noche hoy EXCEPTO para Camilo
-            if 'L' in turno_manana and persona != "JUAN CAMILO PEREZ": return True
+            
+            # Bloqueo por Libre Fijo
+            if 'L' in turno_manana:
+                # EXCEPCIÓN: Si mañana es el Jueves flexible de Camilo (wd 3), 
+                # permitimos que haga Noche hoy Miércoles.
+                if persona == "JUAN CAMILO PEREZ" and wd_manana == 3:
+                    return False
+                return True
         return False
 
     # --- FASE 1: PRE-LLENADO ---
