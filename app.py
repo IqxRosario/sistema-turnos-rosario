@@ -224,7 +224,24 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
     df['TOTAL TURNOS'] = df['TOTAL CORRIDOS'] + df['TOTAL NOCHES']
     df['FINES DE SEMANA'] = df.apply(lambda r: sum(1 for d in range(1, dias_mes+1) if (datetime(ano, mes, d).weekday() >= 5 or es_festivo(d, mes, ano)) and any(t in str(r[str(d)]) for t in ['C', 'N'])), axis=1)
     return df
+    
+def generar_mejor_escenario(n, mes, ano, hist, sug, conf, vacs):
+    resultados = []
 
+    for s in range(n):
+        df = generar_cuadro_equitativo(
+            mes, ano, hist, sug, conf, vacs, s
+        )
+
+        score = (
+            df["TOTAL TURNOS"].std() +
+            df["TOTAL NOCHES"].std() * 1.5
+        )
+
+        resultados.append((score, df))
+
+    resultados.sort(key=lambda x: x[0])
+    return resultados[0][1]
 # --- INTERFAZ ---
 st.title("🏥 Gestor de Turnos (Equidad Total)")
 
@@ -257,7 +274,15 @@ if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
     conf, vacs = procesar_configuracion(link_config)
     if mostrar_rx:
         st.write("🏖️ Vacaciones:", vacs); st.write("🛑 Libres:", conf); st.stop()
-    res = generar_cuadro_equitativo(mes_sel, ano_sel, hist, sug, conf, vacs, semilla)
+    res = generar_mejor_escenario(
+    30,
+    mes_sel,
+    ano_sel,
+    hist,
+    sug,
+    conf,
+    vacs
+)
     st.dataframe(res.style.map(aplicar_colores, subset=[str(d) for d in range(1, calendar.monthrange(ano_sel, mes_sel)[1] + 1)]), use_container_width=True)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
