@@ -223,17 +223,35 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
 # --- FUNCIÓN DE OPTIMIZACIÓN (TU NUEVA FUNCIÓN) ---
 def generar_mejor_escenario(n, mes, ano, hist, sug, conf, vacs):
     resultados = []
+    dias_mes = calendar.monthrange(ano, mes)[1]
     barra_progreso = st.progress(0)
+
     for s in range(n):
         df = generar_cuadro_equitativo(mes, ano, hist, sug, conf, vacs, s)
-        # Score basado en la equidad (desviación estándar)
+
+        cargas_relativas = []
+
+        for p in INTEGRANTES:
+            dias_trabajables = 0
+
+            for d in range(1, dias_mes + 1):
+                val = df.at[p, str(d)]
+                if val not in ['L', 'V']:  # Solo indisponibilidad real
+                    dias_trabajables += 1
+
+            if dias_trabajables > 0:
+                ocupacion = df.at[p, "TOTAL TURNOS"] / dias_trabajables
+                cargas_relativas.append(ocupacion)
+
+        import numpy as np
         score = (
-            df["TOTAL TURNOS"].std() +
-            df["TOTAL NOCHES"].std() * 1.5
+            np.std(cargas_relativas) * 2.0 +
+            df["TOTAL NOCHES"].std() * 2.0
         )
+
         resultados.append((score, df))
         barra_progreso.progress((s + 1) / n)
-    
+
     resultados.sort(key=lambda x: x[0])
     return resultados[0][1]
 
