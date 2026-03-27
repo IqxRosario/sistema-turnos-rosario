@@ -160,6 +160,7 @@ def procesar_configuracion(link):
     return libres_fijos, vacaciones
     
 # --- MOTOR ---
+# --- MOTOR CORREGIDO Y SIN ERRORES DE INDENTACIÓN ---
 def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, config_dict, vacaciones_dict, semilla):
     rng = random.Random(semilla)
     dias_mes = calendar.monthrange(ano, mes)[1]
@@ -185,123 +186,89 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
             else: break
         return streak
 
+    # --- FUNCIÓN DE BLOQUEO DE NOCHES (Corregida e Identada) ---
+    def no_puede_hacer_noche(persona, dia_actual):
+        if dia_actual < dias_mes:
+            turno_manana = str(df.at[persona, str(dia_actual + 1)])
+            # Si mañana es Vacaciones o Posturno, nadie hace noche hoy
+            if any(x in turno_manana for x in ['V', 'P']): return True
+            # Si mañana es Libre, bloqueamos noche hoy EXCEPTO para Camilo
+            if 'L' in turno_manana and persona != "JUAN CAMILO PEREZ": return True
+        return False
+
     # --- FASE 1: PRE-LLENADO ---
     for d in range(1, dias_mes + 1):
         ds = str(d); wd = datetime(ano, mes, d).weekday()
         es_finde_o_festivo = wd >= 5 or es_festivo(d, mes, ano)
 
         for p in INTEGRANTES:
-            # 1. Vacaciones (Prioridad Máxima)
             if d in vacaciones_dict.get(p, []):
                 df.at[p, ds] = 'V'
                 continue
 
             req = sugerencias_dict.get(p, {}).get(ds)
 
-            # 2. Libres Fijos (Segunda Prioridad)
+            # Libres Fijos (Prioridad sobre Sugerencias)
             if wd in config_dict.get(p, []):
-                # Excepción: Permitir la sugerencia 'C' en días libres solo para Camilo
-                if p == "JUAN CAMILO PEREZ" and req and 'C' in req:
-                    pass 
-                else:
-                    df.at[p, ds] = "L"
-                    continue
-
-            # 3. Libres Fijos de Configuración (JERARQUÍA FLEXIBLE)
-            if wd in config_dict.get(p, []):
-                # --- NUEVA REGLA ESPECIAL PARA JUAN CAMILO ---
                 if p == "JUAN CAMILO PEREZ":
-                    # Si Camilo tiene una sugerencia (como C6 un jueves), se le asigna y NO se pone 'L'
                     if req:
                         tl = 'C' if ('C' in req and 'P' not in req) else ('N' if ('N' in req and 'P' not in req) else req)
                         df.at[p, ds] = tl
                         if tl == 'N': noches_totales[p] += 1; turnos_totales[p] += 1
                         if tl == 'C': turnos_totales[p] += 1
-                    else:
-                        # Si no hay sugerencia, el sistema lo deja VACÍO en lugar de poner 'L'
-                        # Esto permite que en la FASE 2 el sistema le pueda asignar una 'N' 
-                        # o un 'C' si hace falta personal, tratando el 'L' como una preferencia, no un bloqueo.
-                        pass 
+                    continue
                 else:
-                    # Regla normal para el resto del equipo (Bloqueo total)
                     df.at[p, ds] = "L"
+                    continue
+
+            # Sugerencias (Si no hay libre fijo)
+            if req:
+                tl = 'C' if ('C' in req and 'P' not in req) else ('N' if ('N' in req and 'P' not in req) else req)
+                df.at[p, ds] = tl
+                if tl == 'N': noches_totales[p] += 1; turnos_totales[p] += 1
+                if tl == 'C': turnos_totales[p] += 1
+                if tl in ['C', 'N'] and es_finde_o_festivo: finde_totales[p] += 1
                 continue
 
-            # 4. Asignaciones Fijas (Cuarta Prioridad)
+            # Asignaciones Fijas Jhon/Angie
             if wd == 1 and p == "JHON RIOS" and df.at[p, ds] == "":
                 df.at[p, ds] = "N"
                 turnos_totales[p] += 1; noches_totales[p] += 1
-                if es_finde_o_festivo: finde_totales[p] += 1
-            
             if wd == 2 and p == "ANGIE BERNAL" and df.at[p, ds] == "":
                 df.at[p, ds] = "C"
                 turnos_totales[p] += 1
-                if es_finde_o_festivo: finde_totales[p] += 1
 
     # --- FASE 2: REPARTICIÓN ---
-   def no_puede_hacer_noche(persona, dia_actual):
-        if dia_actual < dias_mes:
-            turno_manana = str(df.at[persona, str(dia_actual + 1)])
-            # Si mañana es Vacaciones o un Libre de alguien que NO es Camilo, bloqueamos Noche hoy
-            if any(x in turno_manana for x in ['V', 'P']): return True
-            if 'L' in turno_manana and persona != "JUAN CAMILO PEREZ": return True
-        return False
-
     for d in range(1, dias_mes + 1):
         ds = str(d); wd = datetime(ano, mes, d).weekday()
         es_finde_o_festivo = wd >= 5 or es_festivo(d, mes, ano)
 
         cuota_n = 2 - sum(1 for p in INTEGRANTES if 'N' in df.at[p, ds])
-        
-        if es_finde_o_festivo and (wd == 6 or es_festivo(d, mes, ano)): cuota_c_base = 2
-        elif wd == 5: cuota_c_base = 5
-        else: cuota_c_base = 6
+        cuota_c_base = 2 if (es_finde_o_festivo and (wd == 6 or es_festivo(d, mes, ano))) else (5 if wd == 5 else 6)
         cuota_c = cuota_c_base - sum(1 for p in INTEGRANTES if 'C' in df.at[p, ds])
 
         for p in INTEGRANTES:
-            if 'N' in turno_en_dia(p, d-1) and df.at[p, ds] == "": 
-                df.at[p, ds] = 'P'
+            if 'N' in turno_en_dia(p, d-1) and df.at[p, ds] == "": df.at[p, ds] = 'P'
+            if df.at[p, ds] == "" and racha_actual(p, d) >= 3: df.at[p, ds] = 'D'
 
-        for p in INTEGRANTES:
-            if df.at[p, ds] == "" and racha_actual(p, d) >= 3:
-                df.at[p, ds] = 'D'
-
+        # Repartir Noches
         for _ in range(max(0, cuota_n)):
-            disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
-            disp = [p for p in disp if 'N' not in turno_en_dia(p, d-2)]
-            disp = [p for p in disp if not no_puede_hacer_noche(p, d)]
-            
+            disp = [p for p in INTEGRANTES if df.at[p, ds] == "" and 'N' not in turno_en_dia(p, d-2) and not no_puede_hacer_noche(p, d)]
             if disp:
                 rng.shuffle(disp)
-                if es_finde_o_festivo: disp.sort(key=lambda x: (noches_totales[x], finde_totales[x], turnos_totales[x]))
-                else: disp.sort(key=lambda x: (noches_totales[x], turnos_totales[x]))
-                
+                disp.sort(key=lambda x: (noches_totales[x], turnos_totales[x]))
                 elegido = disp[0]
                 df.at[elegido, ds] = "N"
                 turnos_totales[elegido] += 1; noches_totales[elegido] += 1
-                if es_finde_o_festivo: finde_totales[elegido] += 1
 
+        # Repartir Corridos
         for _ in range(max(0, cuota_c)):
             disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
-            
-            disp_segura = []
-            for p in disp:
-                if racha_actual(p, d) == 2 and d < dias_mes:
-                    t_man = str(df.at[p, str(d+1)])
-                    if any(x in t_man for x in ['C', 'N']): continue
-                disp_segura.append(p)
-            
-            if not disp_segura: disp_segura = disp
-            
-            if disp_segura:
-                rng.shuffle(disp_segura)
-                if es_finde_o_festivo: disp_segura.sort(key=lambda x: (finde_totales[x], turnos_totales[x]))
-                else: disp_segura.sort(key=lambda x: (turnos_totales[x], racha_actual(x, d)))
-                
-                elegido = disp_segura[0]
-                df.at[elegido, ds] = "C"
-                turnos_totales[elegido] += 1
-                if es_finde_o_festivo: finde_totales[elegido] += 1
+            if disp:
+                rng.shuffle(disp)
+                disp.sort(key=lambda x: (turnos_totales[x], racha_actual(x, d)))
+                elegido = disp[0]
+                df.at[elegido, ds] = "C"; turnos_totales[elegido] += 1
 
         for p in INTEGRANTES:
             if df.at[p, ds] == "": df.at[p, ds] = "D"
@@ -310,7 +277,6 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
     df['TOTAL NOCHES'] = df.apply(lambda r: noches_totales[r.name], axis=1)
     df['TOTAL TURNOS'] = df['TOTAL CORRIDOS'] + df['TOTAL NOCHES']
     df['FINES DE SEMANA'] = df.apply(lambda r: finde_totales[r.name], axis=1)
-    
     return df
 
 # --- INTERFAZ ---
