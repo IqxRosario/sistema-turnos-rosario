@@ -227,14 +227,30 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
 
 # --- INTERFAZ ---
 st.title("🏥 Gestor de Turnos (Equidad Total)")
+
 with st.sidebar:
+    st.header("1. Carga de Datos")
     archivo_previo = st.file_uploader("Excel Mes Anterior:", type=['xlsx', 'csv'])
+    
+    # --- BOTÓN DE SUGERENCIAS ---
     link_sheet = st.text_input("Link Sugerencias:", "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=0#gid=0")
+    if link_sheet:
+        st.link_button("📝 Abrir Sugerencias (Google)", link_sheet, use_container_width=True)
+    
+    # --- BOTÓN DE CONFIGURACIÓN ---
     link_config = st.text_input("Link Configuración:", "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=1679804429#gid=1679804429")
-    ano_sel = st.number_input("Año:", min_value=2024, value=2024)
-    mes_sel = st.selectbox("Mes:", range(1, 13), index=3) # Abril por defecto
-    semilla = st.number_input("Semilla:", min_value=0, value=0)
-    mostrar_rx = st.checkbox("🔍 Rayos X")
+    if link_config:
+        st.link_button("⚙️ Abrir Configuración (Google)", link_config, use_container_width=True)
+    
+    st.divider()
+    
+    st.header("2. Parámetros del Mes")
+    ano_sel = st.number_input("Año:", min_value=2024, value=2026) # Actualizado a 2026
+    mes_sel = st.selectbox("Mes:", range(1, 13), index=2) # Marzo por defecto
+    semilla = st.number_input("Semilla (Variar para cambiar el azar):", min_value=0, value=0)
+    
+    st.divider()
+    mostrar_rx = st.checkbox("🔍 Activar Diagnóstico (Rayos X)")
 
 if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
     hist, sug = procesar_historial_empalme(archivo_previo), procesar_sugerencias(link_sheet)
