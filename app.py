@@ -106,9 +106,10 @@ def procesar_configuracion(link):
                 if "GINELAP" in nom_sheet: nom_real = "GINELAP"
                 if nom_real:
                     if col_dias and str(r[col_dias]).lower() not in ['nan', 'none', '']:
-                        dias_str = normalizar_texto(r[col_dias])
-                        dias_asignados = [num for dia, num in DIAS_MAP.items() if dia in dias_str]
-                        libres_fijos[nom_real] = list(set(dias_asignados))
+                        dias_str = str(r[col_dias])
+                        # Extraer números directamente para escala 0-6
+                        nums = [int(x) for x in re.findall(r'\d+', dias_str)]
+                        libres_fijos[nom_real] = [n for n in nums if 0 <= n <= 6]
                     if col_vac and str(r[col_vac]).lower() not in ['nan', 'none', '']:
                         vac_str = str(r[col_vac]).replace(' Y ', ',').replace('&', ',')
                         for parte in vac_str.split(','):
@@ -146,13 +147,9 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
             manana_dt = datetime(ano, mes, dia_actual + 1)
             wd_manana = manana_dt.weekday()
             turno_manana = str(df.at[persona, str(dia_actual + 1)])
-            # Bloqueo por Vacaciones o Posturno pre-asignado
             if any(x in turno_manana for x in ['V', 'P']): return True
-            # Bloqueo por Libres Fijos
             if wd_manana in config_dict.get(persona, []):
-                # Excepción: Juan Camilo permite noche antes de su Jueves flexible
-                if persona == "JUAN CAMILO PEREZ" and wd_manana == 3:
-                    return False
+                if persona == "JUAN CAMILO PEREZ" and wd_manana == 3: return False
                 return True
         return False
 
@@ -165,13 +162,11 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 continue
             
             req = sugerencias_dict.get(p, {}).get(ds)
-            # Regla de Libres Fijos
             if wd in config_dict.get(p, []):
                 if p == "JUAN CAMILO PEREZ":
-                    if wd == 1: # Martes Rígido
-                        df.at[p, ds] = "L"
-                        continue
-                    elif wd == 3: # Jueves Flexible
+                    if wd == 1: 
+                        df.at[p, ds] = "L"; continue
+                    elif wd == 3:
                         if req:
                             tl = 'C' if ('C' in req and 'P' not in req) else ('N' if ('N' in req and 'P' not in req) else req)
                             df.at[p, ds] = tl
@@ -179,8 +174,7 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                             if tl == 'C': turnos_totales[p] += 1
                         continue
                 else:
-                    df.at[p, ds] = "L"
-                    continue
+                    df.at[p, ds] = "L"; continue
 
             if req:
                 tl = 'C' if ('C' in req and 'P' not in req) else ('N' if ('N' in req and 'P' not in req) else req)
@@ -206,7 +200,6 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
             if 'N' in turno_en_dia(p, d-1) and df.at[p, ds] == "": df.at[p, ds] = 'P'
             if df.at[p, ds] == "" and racha_actual(p, d) >= 3: df.at[p, ds] = 'D'
 
-        # Noches
         for _ in range(max(0, cuota_n)):
             disp = [p for p in INTEGRANTES if df.at[p, ds] == "" and 'N' not in turno_en_dia(p, d-2) and not no_puede_hacer_noche(p, d)]
             if disp:
@@ -214,7 +207,6 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
                 disp.sort(key=lambda x: (noches_totales[x], turnos_totales[x]))
                 df.at[disp[0], ds] = "N"; turnos_totales[disp[0]] += 1; noches_totales[disp[0]] += 1
 
-        # Corridos
         for _ in range(max(0, cuota_c)):
             disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
             if disp:
@@ -225,17 +217,15 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
         for p in INTEGRANTES:
             if df.at[p, ds] == "": df.at[p, ds] = "D"
 
-    # CONTADORES EXACTOS
+    # CONTADORES
     df['TOTAL CORRIDOS'] = df.apply(lambda r: sum(1 for c in df.columns if 'C' in str(r[c]) and c.isdigit()), axis=1)
     df['TOTAL NOCHES'] = df.apply(lambda r: sum(1 for c in df.columns if 'N' in str(r[c]) and c.isdigit()), axis=1)
     df['TOTAL TURNOS'] = df['TOTAL CORRIDOS'] + df['TOTAL NOCHES']
-    
     def contar_findes(fila):
         conteo = 0
         for d in range(1, dias_mes + 1):
-            if (datetime(ano, mes, d).weekday() >= 5 or es_festivo(d, mes, ano)):
-                if any(t in str(fila[str(d)]) for t in ['C', 'N']):
-                    conteo += 1
+            if (datetime(ano, mes, d).weekday() >= 5 or es_festivo(d, mes, ano)) and any(t in str(fila[str(d)]) for t in ['C', 'N']):
+                conteo += 1
         return conteo
     df['FINES DE SEMANA'] = df.apply(contar_findes, axis=1)
     return df
@@ -244,8 +234,13 @@ def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, conf
 st.title("🏥 Gestor de Turnos (Rápido y Blindado)")
 with st.sidebar:
     archivo_previo = st.file_uploader("Excel Mes Anterior:", type=['xlsx', 'csv'])
+    # LINKS PEGADOS PERMANENTEMENTE
     link_sheet = st.text_input("Link Sugerencias:", "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=0#gid=0")
+    if link_sheet: st.link_button("📝 Abrir Sugerencias", link_sheet, use_container_width=True)
+    
     link_config = st.text_input("Link Configuración:", "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=1679804429#gid=1679804429")
+    if link_config: st.link_button("⚙️ Abrir Configuración", link_config, use_container_width=True)
+    
     ano_sel = st.number_input("Año:", min_value=2024, value=datetime.now().year)
     mes_sel = st.selectbox("Mes:", range(1, 13), index=datetime.now().month-1)
     semilla = st.number_input("Semilla:", min_value=0, value=0)
@@ -259,7 +254,6 @@ if st.button("🚀 GENERAR CUADRO", type="primary", use_container_width=True):
     res = generar_cuadro_equitativo(mes_sel, ano_sel, hist, sug, conf, vacs, semilla)
     dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
     st.dataframe(res.style.map(aplicar_colores, subset=[str(d) for d in range(1, dias_en_mes + 1)]), use_container_width=True)
-    
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         res.to_excel(writer, sheet_name='Turnos')
