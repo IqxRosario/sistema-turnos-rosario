@@ -277,14 +277,36 @@ if st.button("🚀 GENERAR MEJOR ESCENARIO", type="primary", use_container_width
     with st.spinner('Simulando múltiples escenarios para encontrar el más equitativo...'):
         res = generar_mejor_escenario(iteraciones, mes_sel, ano_sel, hist, sug, conf, vacs)
     
-    # Mostrar resultados
+   # --- MOSTRAR RESULTADOS CON COLORES ---
     dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
-    st.success(f"✅ Se han analizado {iteraciones} versiones. ¡Aquí tienes la más equilibrada!")
-    st.dataframe(res.style.map(aplicar_colores, subset=[str(d) for d in range(1, dias_en_mes + 1)]), use_container_width=True)
+    st.success(f"✅ Escenario optimizado encontrado tras {iteraciones} simulaciones.")
     
-    # Botón de Descarga
+    # Aplicamos el estilo al dataframe 'res' para la web
+    columnas_dias = [str(d) for d in range(1, dias_en_mes + 1)]
+    st.dataframe(
+        res.style.map(aplicar_colores, subset=columnas_dias), 
+        use_container_width=True
+    )
+   # --- PREPARAR DESCARGA CON FORMATO ---
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        res.to_excel(writer, sheet_name='Turnos')
-    st.download_button("📥 Descargar Excel", output.getvalue(), f"Turnos_{mes_sel}_Optimizado.xlsx", use_container_width=True)
     
+    # Aplicamos el estilo al dataframe antes de pasarlo al ExcelWriter
+    res_final_estilo = res.style.map(aplicar_colores, subset=columnas_dias)
+    
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        # Guardamos el dataframe con estilo
+        res_final_estilo.to_excel(writer, sheet_name='Turnos')
+        
+        # Opcional: Ajuste automático de columnas (solo si usas xlsxwriter)
+        workbook  = writer.book
+        worksheet = writer.sheets['Turnos']
+        for i, col in enumerate(res.columns):
+            worksheet.set_column(i, i, 10) # Ancho estándar de 10 para todas
+            
+    st.download_button(
+        label="📥 Descargar Excel con Colores",
+        data=output.getvalue(),
+        file_name=f"Turnos_{mes_sel}_{ano_sel}_Optimizado.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
