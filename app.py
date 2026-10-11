@@ -42,27 +42,43 @@ def parsear_rangos_y_dias(texto):
     return list(set(dias))
 
 def procesar_historial_empalme(archivo):
-    hist = {p: "" for p in INTEGRANTES}
+    hist_noche = {p: False for p in INTEGRANTES}
+    hist_consecutivos = {p: 0 for p in INTEGRANTES}
+    
     if archivo is None:
-        return hist
+        return hist_noche, hist_consecutivos
+        
     try:
         df_prev = pd.read_excel(archivo)
         df_prev.columns = [str(c).strip() for c in df_prev.columns]
         
         col_nom = df_prev.columns[0]
-        cols_dias = [c for c in df_prev.columns if c.isdigit()]
+        cols_dias = sorted([int(c) for c in df_prev.columns if c.isdigit()])
         
         if cols_dias:
-            ultimo_dia_col = str(max([int(c) for c in cols_dias]))
+            u_dia = str(cols_dias[-1])
             for _, r in df_prev.iterrows():
                 nom_sheet = normalizar_texto(r[col_nom])
                 nom_real = next((p for p in INTEGRANTES if nom_sheet in p or p in nom_sheet), None)
                 if nom_real:
-                    val = str(r[ultimo_dia_col]).strip().upper()
-                    hist[nom_real] = val
+                    # 1. Verificar si el último día fue Noche
+                    val_u = str(r[u_dia]).strip().upper()
+                    if 'N' in val_u:
+                        hist_noche[nom_real] = True
+                    
+                    # 2. Contar racha de turnos seguidos (C o N) al final del mes
+                    racha = 0
+                    for d in reversed(cols_dias):
+                        val = str(r[str(d)]).strip().upper()
+                        if any(t in val for t in ['C', 'N']):
+                            racha += 1
+                        else:
+                            break
+                    hist_consecutivos[nom_real] = racha
     except Exception as e:
-        st.warning(f"No se pudo procesar el archivo de empalme: {e}")
-    return hist
+        st.warning(f"No se pudo procesar el historial de empalme: {e}")
+        
+    return hist_noche, hist_consecutivos
 
 def procesar_configuracion_y_sugerencias(link):
     libres_fijos = {p: [] for p in INTEGRANTES}
