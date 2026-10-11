@@ -1,4 +1,5 @@
 import streamlit as st
+from motor_pulp import generar_cuadro_pulp
 import pandas as pd
 from datetime import datetime
 import calendar
@@ -266,47 +267,76 @@ with st.sidebar:
     iteraciones = st.slider("Número de simulaciones (n):", 10, 100, 30)
     mostrar_rx = st.checkbox("🔍 Rayos X")
 
-if st.button("🚀 GENERAR MEJOR ESCENARIO", type="primary", use_container_width=True):
-    hist, sug = procesar_historial_empalme(archivo_previo), procesar_sugerencias(link_sheet)
+# --- MANEJO DE RAYOS X (SI ESTÁ ACTIVADO) ---
+if mostrar_rx:
     conf, vacs = procesar_configuracion(link_config)
-    
-    if mostrar_rx:
-        st.write("🏖️ Vacaciones:", vacs); st.write("🛑 Libres:", conf); st.stop()
-    
-    # EJECUCIÓN DEL OPTIMIZADOR
-    with st.spinner('Simulando múltiples escenarios para encontrar el más equitativo...'):
-        res = generar_mejor_escenario(iteraciones, mes_sel, ano_sel, hist, sug, conf, vacs)
-    
-   # --- MOSTRAR RESULTADOS CON COLORES ---
-    dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
-    st.success(f"✅ Escenario optimizado encontrado tras {iteraciones} simulaciones.")
-    
-    # Aplicamos el estilo al dataframe 'res' para la web
-    columnas_dias = [str(d) for d in range(1, dias_en_mes + 1)]
-    st.dataframe(
-        res.style.map(aplicar_colores, subset=columnas_dias), 
-        use_container_width=True
-    )
-   # --- PREPARAR DESCARGA CON FORMATO ---
-    output = io.BytesIO()
-    
-    # Aplicamos el estilo al dataframe antes de pasarlo al ExcelWriter
-    res_final_estilo = res.style.map(aplicar_colores, subset=columnas_dias)
-    
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        # Guardamos el dataframe con estilo
-        res_final_estilo.to_excel(writer, sheet_name='Turnos')
+    st.write("🏖️ Vacaciones:", vacs)
+    st.write("🛑 Libres:", conf)
+    st.stop()
+
+# --- PESTAÑAS DE GENERACIÓN ---
+tab1, tab2 = st.tabs(["⚡ Motor Pro (Optimización PuLP)", "🎲 Motor Clásico (Simulación)"])
+
+with tab1:
+    st.subheader("Optimización Matemática en 1 solo paso")
+    if st.button("🚀 GENERAR CON OPTIMIZACIÓN", type="primary", use_container_width=True, key="btn_pulp"):
+        hist, sug = procesar_historial_empalme(archivo_previo), procesar_sugerencias(link_sheet)
+        conf, vacs = procesar_configuracion(link_config)
         
-        # Opcional: Ajuste automático de columnas (solo si usas xlsxwriter)
-        workbook  = writer.book
-        worksheet = writer.sheets['Turnos']
-        for i, col in enumerate(res.columns):
-            worksheet.set_column(i, i, 10) # Ancho estándar de 10 para todas
+        with st.spinner('Resolviendo modelo de optimización matemática...'):
+            res = generar_cuadro_pulp(mes_sel, ano_sel, hist, sug, conf, vacs)
             
-    st.download_button(
-        label="📥 Descargar Excel con Colores",
-        data=output.getvalue(),
-        file_name=f"Turnos_{mes_sel}_{ano_sel}_Optimizado.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
+        dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
+        columnas_dias = [str(d) for d in range(1, dias_en_mes + 1)]
+        
+        st.success("✅ ¡Turnos calculados matemáticamente sin errores de restricciones!")
+        st.dataframe(res.style.map(aplicar_colores, subset=columnas_dias), use_container_width=True)
+        
+        # Preparar descarga con formato Excel
+        output = io.BytesIO()
+        res_final_estilo = res.style.map(aplicar_colores, subset=columnas_dias)
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            res_final_estilo.to_excel(writer, sheet_name='Turnos')
+            worksheet = writer.sheets['Turnos']
+            for i, col in enumerate(res.columns):
+                worksheet.set_column(i, i, 10)
+        
+        st.download_button(
+            label="📥 Descargar Excel Optimizado",
+            data=output.getvalue(),
+            file_name=f"Turnos_{mes_sel}_{ano_sel}_PuLP.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
+with tab2:
+    st.subheader("Simulación por N-iteraciones aleatorias")
+    if st.button("🚀 GENERAR ESCENARIO SIMULADO", type="secondary", use_container_width=True, key="btn_clasico"):
+        hist, sug = procesar_historial_empalme(archivo_previo), procesar_sugerencias(link_sheet)
+        conf, vacs = procesar_configuracion(link_config)
+        
+        with st.spinner('Simulando múltiples escenarios...'):
+            res = generar_mejor_escenario(iteraciones, mes_sel, ano_sel, hist, sug, conf, vacs)
+            
+        dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
+        columnas_dias = [str(d) for d in range(1, dias_en_mes + 1)]
+        
+        st.success(f"✅ Escenario optimizado encontrado tras {iteraciones} simulaciones.")
+        st.dataframe(res.style.map(aplicar_colores, subset=columnas_dias), use_container_width=True)
+        
+        # Preparar descarga con formato Excel
+        output = io.BytesIO()
+        res_final_estilo = res.style.map(aplicar_colores, subset=columnas_dias)
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            res_final_estilo.to_excel(writer, sheet_name='Turnos')
+            worksheet = writer.sheets['Turnos']
+            for i, col in enumerate(res.columns):
+                worksheet.set_column(i, i, 10)
+        
+        st.download_button(
+            label="📥 Descargar Excel Simulado",
+            data=output.getvalue(),
+            file_name=f"Turnos_{mes_sel}_{ano_sel}_Simulado.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
