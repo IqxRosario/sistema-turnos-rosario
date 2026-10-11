@@ -169,10 +169,10 @@ with tab1:
     st.subheader("Optimización Matemática en 1 solo paso")
     if st.button("🚀 GENERAR CON OPTIMIZACIÓN", type="primary", use_container_width=True, key="btn_pulp"):
         conf, vacs, sug = procesar_configuracion_y_sugerencias(link_config)
-        hist = procesar_historial_empalme(archivo_previo)
-        
-        with st.spinner('Resolviendo modelo de optimización matemática...'):
-            res = generar_cuadro_pulp(mes_sel, ano_sel, hist, sug, conf, vacs)
+       hist_noche, hist_racha = procesar_historial_empalme(archivo_previo)
+
+with st.spinner('Simulando múltiples escenarios...'):
+    res = generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vacs)
             
         dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
         columnas_dias = [str(d) for d in range(1, dias_en_mes + 1)]
@@ -201,10 +201,10 @@ with tab2:
     iteraciones = st.slider("Número de simulaciones", 10, 200, 50)
     if st.button("🚀 GENERAR ESCENARIO SIMULADO", type="secondary", use_container_width=True, key="btn_clasico"):
         conf, vacs, sug = procesar_configuracion_y_sugerencias(link_config)
-        hist = procesar_historial_empalme(archivo_previo)
-        
-        with st.spinner('Simulando múltiples escenarios...'):
-            res = generar_cuadro_pulp(mes_sel, ano_sel, hist, sug, conf, vacs)
+       hist_noche, hist_racha = procesar_historial_empalme(archivo_previo)
+
+with st.spinner('Simulando múltiples escenarios...'):
+    res = generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vacs)
             
         dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
         columnas_dias = [str(d) for d in range(1, dias_en_mes + 1)]
