@@ -160,6 +160,9 @@ ano_sel = st.sidebar.number_input("Año", min_value=2024, max_value=2030, value=
 st.sidebar.header("🔗 Conexión a Google Sheets")
 link_config = st.sidebar.text_input("Link Hoja Unificada (Google Sheets)", value=LINK_SHEETS_DEFECTO)
 
+# Botón directo para abrir la hoja en una pestaña nueva
+st.sidebar.link_button("📊 Abrir Hoja en Google Sheets", LINK_SHEETS_DEFECTO, use_container_width=True)
+
 archivo_previo = st.file_uploader("📁 Cargar Excel de empalme mes anterior (Opcional)", type=["xlsx"])
 
 # --- PESTAÑAS DE GENERACIÓN ---
