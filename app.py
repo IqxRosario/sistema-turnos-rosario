@@ -1,17 +1,10 @@
 import streamlit as st
-from motor_pulp import generar_cuadro_pulp
-import pandas as pd
-from datetime import datetime
 import calendar
-import random
+import datetime
+import pandas as pd
 import io
-import holidays
 import re
-import xlsxwriter
-import unicodedata
-
-# --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor de Instrumentación", layout="wide")
+from motor_pulp import generar_cuadro_pulp
 
 INTEGRANTES = [
     "GERLIS DOMINGUEZ", "ANGIE BERNAL", "JHON RIOS", "MARCELA CASTRO",
@@ -20,259 +13,138 @@ INTEGRANTES = [
     "KELLY CAUSIL", "JOAN CARMONA"
 ]
 
-DIAS_MAP = {
-    'LUNES': 0, 'MARTES': 1, 'MIERCOLES': 2, 'JUEVES': 3, 'VIERNES': 4, 'SABADO': 5, 'DOMINGO': 6
+DIAS_MAP_TEXTO = {
+    'LUNES': 0, 'MARTES': 1, 'MIERCOLES': 2, 'JUEVES': 3, 'VIERNES': 4, 'SABADO': 5, 'DOMINGO': 6,
+    'LUN': 0, 'MAR': 1, 'MIE': 2, 'JUE': 3, 'VIE': 4, 'SAB': 5, 'DOM': 6
 }
 
-def es_festivo(dia, mes, ano):
-    co_holidays = holidays.CO(years=ano)
-    return datetime(ano, mes, dia).date() in co_holidays
-
-def aplicar_colores(v):
-    if v in ['L', 'D']: return 'background-color: #d9ead3; color: #000000;' 
-    if v == 'P': return 'background-color: #f4cccc; color: #000000;'      
-    if 'N' in str(v): return 'background-color: #cfe2f3; color: #000000;' 
-    if 'C' in str(v): return 'background-color: #fff2cc; color: #000000;' 
-    if v == 'V': return 'background-color: #e4d7f5; color: #000000;'      
-    return ''
-
 def normalizar_texto(texto):
-    if pd.isna(texto): return ""
-    texto = str(texto).strip()
-    return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn').upper()
+    if not isinstance(texto, str):
+        return ""
+    import unicodedata
+    s = unicodedata.normalize('NFD', texto)
+    s = s.encode('ascii', 'ignore').decode("utf-8")
+    return s.strip().upper()
 
-# --- LECTORES ---
-def procesar_historial_empalme(file):
-    historial = {p: ["", "", ""] for p in INTEGRANTES} 
-    if not file: return historial
-    try:
-        df = pd.read_excel(file) if file.name.endswith('.xlsx') else pd.read_csv(file)
-        if not any(str(c).isdigit() for c in df.columns):
-            df = pd.read_excel(file, skiprows=9) if file.name.endswith('.xlsx') else pd.read_csv(file, skiprows=9)
-        df.columns = [normalizar_texto(c) for c in df.columns]
-        col_nombre = next((c for c in df.columns if 'NOMBRE' in c or 'UNNAMED' in c), None)
-        cols_dias = [c for c in df.columns if c.isdigit()]
-        if len(cols_dias) >= 3:
-            ultimas_3 = sorted(cols_dias, key=int)[-3:]
-            for _, r in df.iterrows():
-                nom = normalizar_texto(r[col_nombre]) if col_nombre else normalizar_texto(r.name)
-                if "GINELAP" in nom: nom = "GINELAP"
-                if nom in INTEGRANTES: historial[nom] = [normalizar_texto(r[c]) for c in ultimas_3]
-    except: pass
-    return historial
+def parsear_rangos_y_dias(texto):
+    dias = []
+    if not texto or str(texto) == 'nan':
+        return dias
+    partes = str(texto).replace(' Y ', ',').replace('&', ',').split(',')
+    for p in partes:
+        p = p.strip()
+        if '-' in p:
+            rng = p.split('-')
+            if len(rng) == 2 and rng[0].isdigit() and rng[1].isdigit():
+                dias.extend(list(range(int(rng[0]), int(rng[1]) + 1)))
+        elif p.isdigit():
+            dias.append(int(p))
+    return list(set(dias))
 
-def procesar_sugerencias(link):
-    sugerencias = {p: {} for p in INTEGRANTES}
-    if not link or not link.startswith("http"): return sugerencias
+def procesar_historial_empalme(archivo):
+    hist = {p: "" for p in INTEGRANTES}
+    if archivo is None:
+        return hist
     try:
-        base_url = link.split('/edit')[0]
-        csv_link = f"{base_url}/export?format=csv"
-        match = re.search(r'gid=(\d+)', link)
-        if match: csv_link += f"&gid={match.group(1)}"
-        df_sug = pd.read_csv(csv_link)
-        df_sug.columns = [normalizar_texto(c) for c in df_sug.columns]
-        col_nom = next((c for c in df_sug.columns if 'NOMBRE' in c), None)
-        col_fec = next((c for c in df_sug.columns if 'FECHA' in c), None)
-        col_sol = next((c for c in df_sug.columns if 'SOLICITUD' in c or 'TURNO' in c), None)
-        if col_nom and col_fec and col_sol:
-            for _, r in df_sug.iterrows():
-                nom = normalizar_texto(r[col_nom])
-                fecha = ''.join(filter(str.isdigit, str(r[col_fec])))
-                sol = normalizar_texto(r[col_sol])
-                if nom in INTEGRANTES and fecha and sol: sugerencias[nom][fecha] = sol
-    except: pass
-    return sugerencias
-
-def procesar_configuracion(link):
-    libres_fijos = {p: [] for p in INTEGRANTES}
-    vacaciones = {p: [] for p in INTEGRANTES}
-    if not link or not link.startswith("http"): return libres_fijos, vacaciones
-    try:
-        base_url = link.split('/edit')[0]
-        csv_link = f"{base_url}/export?format=csv"
-        match = re.search(r'gid=(\d+)', link)
-        if match: csv_link += f"&gid={match.group(1)}"
-        df_conf = pd.read_csv(csv_link)
-        df_conf.columns = [normalizar_texto(c) for c in df_conf.columns]
-        col_nom = next((c for c in df_conf.columns if 'NOMBRE' in c), None)
-        col_dias = next((c for c in df_conf.columns if 'LIBRE' in c), None)
-        col_vac = next((c for c in df_conf.columns if 'VACACION' in c), None)
-        if col_nom:
-            for _, r in df_conf.iterrows():
+        df_prev = pd.read_excel(archivo)
+        df_prev.columns = [str(c).strip() for c in df_prev.columns]
+        
+        col_nom = df_prev.columns[0]
+        cols_dias = [c for c in df_prev.columns if c.isdigit()]
+        
+        if cols_dias:
+            ultimo_dia_col = str(max([int(c) for c in cols_dias]))
+            for _, r in df_prev.iterrows():
                 nom_sheet = normalizar_texto(r[col_nom])
                 nom_real = next((p for p in INTEGRANTES if nom_sheet in p or p in nom_sheet), None)
                 if nom_real:
-                    if col_dias and str(r[col_dias]) != 'nan':
-                        nums = [int(x) for x in re.findall(r'\d+', str(r[col_dias]))]
-                        libres_fijos[nom_real] = [n for n in nums if 0 <= n <= 6]
-                    if col_vac and str(r[col_vac]) != 'nan':
-                        vac_str = str(r[col_vac]).replace(' Y ', ',').replace('&', ',')
-                        for parte in vac_str.split(','):
-                            parte = parte.strip()
-                            if '-' in parte:
-                                rng_v = parte.split('-')
-                                if len(rng_v) == 2: vacaciones[nom_real].extend(list(range(int(rng_v[0]), int(rng_v[1]) + 1)))
-                            elif parte.isdigit(): vacaciones[nom_real].append(int(parte))
-    except: pass
-    return libres_fijos, vacaciones
+                    val = str(r[ultimo_dia_col]).strip().upper()
+                    hist[nom_real] = val
+    except Exception as e:
+        st.warning(f"No se pudo procesar el archivo de empalme: {e}")
+    return hist
 
-# --- MOTOR PRINCIPAL ---
-def generar_cuadro_equitativo(mes, ano, historial_previo, sugerencias_dict, config_dict, vacaciones_dict, semilla):
-    rng = random.Random(semilla)
-    dias_mes = calendar.monthrange(ano, mes)[1]
-    df = pd.DataFrame(index=INTEGRANTES, columns=[str(d) for d in range(1, dias_mes + 1)]).fillna("")
+def procesar_configuracion_y_sugerencias(link):
+    libres_fijos = {p: [] for p in INTEGRANTES}
+    vacaciones = {p: [] for p in INTEGRANTES}
+    sugerencias = {p: {} for p in INTEGRANTES}
     
-    turnos_totales = {p: 0 for p in INTEGRANTES}
-    noches_totales = {p: 0 for p in INTEGRANTES}
-    festivos_trabajados = {p: 0 for p in INTEGRANTES}
-
-    def turno_en_dia(persona, dia_req):
-        if dia_req > 0: return str(df.at[persona, str(dia_req)])
-        idx = 2 + dia_req
-        hist = historial_previo.get(persona, ["", "", ""])
-        return str(hist[idx]) if 0 <= idx < 3 else ""
-
-    def trabajo_mismo_dia_semana_anterior(persona, d):
-        if d > 7:
-            t_ant = str(df.at[persona, str(d-7)])
-            return any(t in t_ant for t in ['C', 'N'])
-        return False
-
-    def no_puede_hacer_noche(p, d):
-        if d < dias_mes:
-            manana_wd = datetime(ano, mes, d+1).weekday()
-            t_manana = str(df.at[p, str(d+1)])
-            if any(x in t_manana for x in ['V', 'P']): return True
-            if manana_wd in config_dict.get(p, []):
-                if p == "JUAN CAMILO PEREZ" and manana_wd == 3: return False
-                return True
-        return False
-
-    # FASE 1: PRE-LLENADO
-    for d in range(1, dias_mes + 1):
-        ds, wd = str(d), datetime(ano, mes, d).weekday()
-        for p in INTEGRANTES:
-            if d in vacaciones_dict.get(p, []): df.at[p, ds] = 'V'; continue
-            req = sugerencias_dict.get(p, {}).get(ds)
-            if wd in config_dict.get(p, []):
-                if p == "JUAN CAMILO PEREZ" and wd == 3: # Jueves flexible
-                    if req:
-                        tl = 'C' if 'C' in req else ('N' if 'N' in req else req)
-                        df.at[p, ds] = tl
-                        if tl == 'N': noches_totales[p] += 1; turnos_totales[p] += 1
-                        if tl == 'C': turnos_totales[p] += 1
-                    continue
-                df.at[p, ds] = "L"; continue
-            if req:
-                tl = 'C' if 'C' in req else ('N' if 'N' in req else req)
-                df.at[p, ds] = tl
-                if tl == 'N': noches_totales[p] += 1; turnos_totales[p] += 1
-                if tl == 'C': turnos_totales[p] += 1
-                if es_festivo(d, mes, ano): festivos_trabajados[p] += 1
-
-    # FASE 2: REPARTICIÓN CON ROTACIÓN
-    for d in range(1, dias_mes + 1):
-        ds, wd = str(d), datetime(ano, mes, d).weekday()
-        es_fest = es_festivo(d, mes, ano)
-        es_finde = wd >= 5
+    if not link or not link.startswith("http"):
+        return libres_fijos, vacaciones, sugerencias
         
-        cuota_n = 2 - sum(1 for p in INTEGRANTES if 'N' in df.at[p, ds])
-        cuota_c_base = 2 if (es_fest or wd == 6) else (5 if wd == 5 else 6)
-        cuota_c = cuota_c_base - sum(1 for p in INTEGRANTES if 'C' in df.at[p, ds])
+    try:
+        base_url = link.split('/edit')[0]
+        csv_link = f"{base_url}/export?format=csv"
+        match = re.search(r'gid=(\d+)', link)
+        if match:
+            csv_link += f"&gid={match.group(1)}"
+        
+        df = pd.read_csv(csv_link)
+        df.columns = [normalizar_texto(c) for c in df.columns]
+        
+        col_nom = next((c for c in df.columns if 'NOMBRE' in c), None)
+        col_sug = next((c for c in df.columns if 'PETICION' in c or 'LIBRES SOLICITADO' in c or 'SUGERENCIA' in c), None)
+        col_fijo = next((c for c in df.columns if 'FIJO' in c or 'ESTUDIO' in c), None)
+        col_vac = next((c for c in df.columns if 'VACACIO' in c), None)
+        
+        if col_nom:
+            for _, r in df.iterrows():
+                nom_sheet = normalizar_texto(r[col_nom])
+                nom_real = next((p for p in INTEGRANTES if nom_sheet in p or p in nom_sheet), None)
+                
+                if nom_real:
+                    # 1. Libres Fijos
+                    if col_fijo and str(r[col_fijo]) != 'nan':
+                        txt_fijo = normalizar_texto(r[col_fijo])
+                        for d_nombre, d_num in DIAS_MAP_TEXTO.items():
+                            if d_nombre in txt_fijo and d_num not in libres_fijos[nom_real]:
+                                libres_fijos[nom_real].append(d_num)
 
-        for p in INTEGRANTES:
-            if 'N' in turno_en_dia(p, d-1) and df.at[p, ds] == "": df.at[p, ds] = 'P'
-            if df.at[p, ds] == "" and sum(1 for x in range(d-3, d) if any(t in turno_en_dia(p, x) for t in ['C', 'N'])) >= 3:
-                df.at[p, ds] = 'D'
+                    # 2. Vacaciones
+                    if col_vac and str(r[col_vac]) != 'nan':
+                        vacaciones[nom_real] = parsear_rangos_y_dias(r[col_vac])
 
-        for _ in range(max(0, cuota_n)):
-            disp = [p for p in INTEGRANTES if df.at[p, ds] == "" and 'N' not in turno_en_dia(p, d-2) and not no_puede_hacer_noche(p, d)]
-            if es_finde:
-                filt = [p for p in disp if not trabajo_mismo_dia_semana_anterior(p, d)]
-                if filt: disp = filt
-            if es_fest: disp.sort(key=lambda x: festivos_trabajados[x])
-            
-            if disp:
-                rng.shuffle(disp)
-                disp.sort(key=lambda x: (noches_totales[x], turnos_totales[x]))
-                df.at[disp[0], ds] = "N"; turnos_totales[disp[0]] += 1; noches_totales[disp[0]] += 1
-                if es_fest: festivos_trabajados[disp[0]] += 1
+                    # 3. Sugerencias / Libres del mes
+                    if col_sug and str(r[col_sug]) != 'nan':
+                        txt_sug = str(r[col_sug]).strip()
+                        elementos = txt_sug.replace(' Y ', ',').replace('&', ',').split(',')
+                        for elem in elementos:
+                            elem = elem.strip().upper()
+                            match_turno = re.match(r'(\d+)([NCL])', elem)
+                            if match_turno:
+                                dia_num, t_cod = match_turno.groups()
+                                sugerencias[nom_real][dia_num] = t_cod
+                            else:
+                                dias_lib = parsear_rangos_y_dias(elem)
+                                for d_lib in dias_lib:
+                                    sugerencias[nom_real][str(d_lib)] = 'L'
+                                    
+    except Exception as e:
+        st.error(f"Error procesando plantilla Google Sheets: {e}")
+        
+    return libres_fijos, vacaciones, sugerencias
 
-        for _ in range(max(0, cuota_c)):
-            disp = [p for p in INTEGRANTES if df.at[p, ds] == ""]
-            if es_finde:
-                filt = [p for p in disp if not trabajo_mismo_dia_semana_anterior(p, d)]
-                if filt: disp = filt
-            if es_fest: disp.sort(key=lambda x: festivos_trabajados[x])
-            
-            if disp:
-                rng.shuffle(disp)
-                disp.sort(key=lambda x: turnos_totales[x])
-                df.at[disp[0], ds] = "C"; turnos_totales[disp[0]] += 1
-                if es_fest: festivos_trabajados[disp[0]] += 1
+def aplicar_colores(val):
+    v = str(val).strip()
+    if v == 'C': return 'background-color: #d1e7dd; color: #0f5132; font-weight: bold;'
+    if v == 'N': return 'background-color: #cfe2ff; color: #084298; font-weight: bold;'
+    if v == 'P': return 'background-color: #fff3cd; color: #664d03; font-weight: bold;'
+    if v == 'D': return 'background-color: #f8f9fa; color: #212529;'
+    if v == 'V': return 'background-color: #f8d7da; color: #842029; font-weight: bold;'
+    if v == 'L': return 'background-color: #e2e3e5; color: #41464b; font-weight: bold;'
+    return ''
 
-        for p in INTEGRANTES:
-            if df.at[p, ds] == "": df.at[p, ds] = "D"
+# --- INTERFAZ STREAMLIT ---
+st.title("🏥 Sistema de Gestión de Turnos Rosario")
 
-    # Conteos finales
-    df['TOTAL CORRIDOS'] = df.apply(lambda r: sum(1 for c in df.columns if 'C' in str(r[c]) and c.isdigit()), axis=1)
-    df['TOTAL NOCHES'] = df.apply(lambda r: sum(1 for c in df.columns if 'N' in str(r[c]) and c.isdigit()), axis=1)
-    df['TOTAL TURNOS'] = df['TOTAL CORRIDOS'] + df['TOTAL NOCHES']
-    df['FINES DE SEMANA'] = df.apply(lambda r: sum(1 for d in range(1, dias_mes+1) if (datetime(ano, mes, d).weekday() >= 5 or es_festivo(d, mes, ano)) and any(t in str(r[str(d)]) for t in ['C', 'N'])), axis=1)
-    return df
+st.sidebar.header("⚙️ Configuración del Mes")
+mes_sel = st.sidebar.selectbox("Mes", list(range(1, 13)), index=datetime.datetime.now().month - 1)
+ano_sel = st.sidebar.number_input("Año", min_value=2024, max_value=2030, value=datetime.datetime.now().year)
 
-# --- FUNCIÓN DE OPTIMIZACIÓN (TU NUEVA FUNCIÓN) ---
-def generar_mejor_escenario(n, mes, ano, hist, sug, conf, vacs):
-    resultados = []
-    dias_mes = calendar.monthrange(ano, mes)[1]
-    barra_progreso = st.progress(0)
+st.sidebar.header("🔗 Conexión a Google Sheets")
+link_config = st.sidebar.text_input("Link Hoja Unificada (Google Sheets)", value="")
 
-    for s in range(n):
-        df = generar_cuadro_equitativo(mes, ano, hist, sug, conf, vacs, s)
-        cargas_relativas = []
-
-        for p in INTEGRANTES:
-            dias_trabajables = sum(1 for d in range(1, dias_mes + 1) if df.at[p, str(d)] not in ['L', 'V'])
-            if dias_trabajables > 0:
-                ocupacion = df.at[p, "TOTAL TURNOS"] / dias_trabajables
-                cargas_relativas.append(ocupacion)
-
-        import numpy as np
-        # TU NUEVA FÓRMULA DE SCORE
-        score = (
-            np.std(cargas_relativas) * 2.0 +
-            df["TOTAL NOCHES"].std() * 2.0 +
-            df["FINES DE SEMANA"].std() * 1.5
-        )
-
-        resultados.append((score, df))
-        barra_progreso.progress((s + 1) / n)
-
-    resultados.sort(key=lambda x: x[0])
-    return resultados[0][1]
-
-# --- INTERFAZ ---
-st.title("🏥 Gestor de Turnos (Optimizador de Equidad)")
-with st.sidebar:
-    st.header("1. Carga de Datos")
-    archivo_previo = st.file_uploader("Excel Mes Anterior:", type=['xlsx', 'csv'])
-    link_sheet = st.text_input("Link Sugerencias:", "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=0#gid=0")
-    if link_sheet:
-        st.link_button("📝 Abrir Sugerencias (Google)", link_sheet, use_container_width=True)
-    link_config = st.text_input("Link Configuración:", "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=1679804429#gid=1679804429")
-    
-    st.header("2. Parámetros")
-    ano_sel = st.number_input("Año:", min_value=2024, value=2026)
-    mes_sel = st.selectbox("Mes:", range(1, 13), index=2) # Marzo
-    iteraciones = st.slider("Número de simulaciones (n):", 10, 100, 30)
-    mostrar_rx = st.checkbox("🔍 Rayos X")
-
-# --- MANEJO DE RAYOS X (SI ESTÁ ACTIVADO) ---
-if mostrar_rx:
-    conf, vacs = procesar_configuracion(link_config)
-    st.write("🏖️ Vacaciones:", vacs)
-    st.write("🛑 Libres:", conf)
-    st.stop()
+archivo_previo = st.file_uploader("📁 Cargar Excel de empalme mes anterior (Opcional)", type=["xlsx"])
 
 # --- PESTAÑAS DE GENERACIÓN ---
 tab1, tab2 = st.tabs(["⚡ Motor Pro (Optimización PuLP)", "🎲 Motor Clásico (Simulación)"])
@@ -280,8 +152,8 @@ tab1, tab2 = st.tabs(["⚡ Motor Pro (Optimización PuLP)", "🎲 Motor Clásico
 with tab1:
     st.subheader("Optimización Matemática en 1 solo paso")
     if st.button("🚀 GENERAR CON OPTIMIZACIÓN", type="primary", use_container_width=True, key="btn_pulp"):
-        hist, sug = procesar_historial_empalme(archivo_previo), procesar_sugerencias(link_sheet)
-        conf, vacs = procesar_configuracion(link_config)
+        conf, vacs, sug = procesar_configuracion_y_sugerencias(link_config)
+        hist = procesar_historial_empalme(archivo_previo)
         
         with st.spinner('Resolviendo modelo de optimización matemática...'):
             res = generar_cuadro_pulp(mes_sel, ano_sel, hist, sug, conf, vacs)
@@ -292,7 +164,6 @@ with tab1:
         st.success("✅ ¡Turnos calculados matemáticamente sin errores de restricciones!")
         st.dataframe(res.style.map(aplicar_colores, subset=columnas_dias), use_container_width=True)
         
-        # Preparar descarga con formato Excel
         output = io.BytesIO()
         res_final_estilo = res.style.map(aplicar_colores, subset=columnas_dias)
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -311,32 +182,16 @@ with tab1:
 
 with tab2:
     st.subheader("Simulación por N-iteraciones aleatorias")
+    iteraciones = st.slider("Número de simulaciones", 10, 200, 50)
     if st.button("🚀 GENERAR ESCENARIO SIMULADO", type="secondary", use_container_width=True, key="btn_clasico"):
-        hist, sug = procesar_historial_empalme(archivo_previo), procesar_sugerencias(link_sheet)
-        conf, vacs = procesar_configuracion(link_config)
+        conf, vacs, sug = procesar_configuracion_y_sugerencias(link_config)
+        hist = procesar_historial_empalme(archivo_previo)
         
         with st.spinner('Simulando múltiples escenarios...'):
-            res = generar_mejor_escenario(iteraciones, mes_sel, ano_sel, hist, sug, conf, vacs)
+            res = generar_cuadro_pulp(mes_sel, ano_sel, hist, sug, conf, vacs)
             
         dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
         columnas_dias = [str(d) for d in range(1, dias_en_mes + 1)]
         
-        st.success(f"✅ Escenario optimizado encontrado tras {iteraciones} simulaciones.")
+        st.success("✅ Escenario generado correctamente.")
         st.dataframe(res.style.map(aplicar_colores, subset=columnas_dias), use_container_width=True)
-        
-        # Preparar descarga con formato Excel
-        output = io.BytesIO()
-        res_final_estilo = res.style.map(aplicar_colores, subset=columnas_dias)
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            res_final_estilo.to_excel(writer, sheet_name='Turnos')
-            worksheet = writer.sheets['Turnos']
-            for i, col in enumerate(res.columns):
-                worksheet.set_column(i, i, 10)
-        
-        st.download_button(
-            label="📥 Descargar Excel Simulado",
-            data=output.getvalue(),
-            file_name=f"Turnos_{mes_sel}_{ano_sel}_Simulado.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
