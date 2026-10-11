@@ -13,6 +13,8 @@ INTEGRANTES = [
     "KELLY CAUSIL", "JOAN CARMONA"
 ]
 
+LINK_SHEETS_DEFECTO = "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=0#gid=0"
+
 DIAS_MAP_TEXTO = {
     'LUNES': 0, 'MARTES': 1, 'MIERCOLES': 2, 'JUEVES': 3, 'VIERNES': 4, 'SABADO': 5, 'DOMINGO': 6,
     'LUN': 0, 'MAR': 1, 'MIE': 2, 'JUE': 3, 'VIE': 4, 'SAB': 5, 'DOM': 6
@@ -156,7 +158,7 @@ mes_sel = st.sidebar.selectbox("Mes", list(range(1, 13)), index=datetime.datetim
 ano_sel = st.sidebar.number_input("Año", min_value=2024, max_value=2030, value=datetime.datetime.now().year)
 
 st.sidebar.header("🔗 Conexión a Google Sheets")
-link_config = st.sidebar.text_input("Link Hoja Unificada (Google Sheets)", value="")
+link_config = st.sidebar.text_input("Link Hoja Unificada (Google Sheets)", value=LINK_SHEETS_DEFECTO)
 
 archivo_previo = st.file_uploader("📁 Cargar Excel de empalme mes anterior (Opcional)", type=["xlsx"])
 
