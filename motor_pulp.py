@@ -15,7 +15,7 @@ def es_festivo_co(dia, mes, ano):
     co_holidays = holidays.CO(years=ano)
     return datetime.date(ano, mes, dia) in co_holidays
 
-def generar_cuadro_pulp(mes, ano, historial_previo, sugerencias_dict, config_dict, vacaciones_dict):
+def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, config_dict, vacaciones_dict):
     dias_mes = calendar.monthrange(ano, mes)[1]
     dias = list(range(1, dias_mes + 1))
     turnos_asig = ['C', 'N']
@@ -48,7 +48,24 @@ def generar_cuadro_pulp(mes, ano, historial_previo, sugerencias_dict, config_dic
                         
     prob += pulp.lpSum([x[p][d][t] * pesos[p, d, t] for p in INTEGRANTES for d in dias for t in turnos_asig])
     
-    # 3. Restricciones
+    # 3. Restricciones de Empalme con el Mes Anterior (Día 1 y Día 2)
+    for p in INTEGRANTES:
+        # A) Si terminó en Noche (N) -> Día 1 obligatorio libre / post-noche
+        if hist_noche.get(p, False):
+            prob += x[p][1]['C'] == 0
+            prob += x[p][1]['N'] == 0
+
+        # B) Si ya trae 3 o más turnos seguidos -> Día 1 OBLIGATORIO Descanso
+        racha_prev = hist_racha.get(p, 0)
+        if racha_prev >= 3:
+            prob += x[p][1]['C'] == 0
+            prob += x[p][1]['N'] == 0
+
+        # C) Si trae 2 turnos seguidos -> Puede trabajar el Día 1, pero NO el Día 2
+        elif racha_prev == 2:
+            prob += x[p][1]['C'] + x[p][1]['N'] + x[p][2]['C'] + x[p][2]['N'] <= 1
+
+    # 4. Restricciones mensuales estándar
     for d in dias:
         wd = datetime.date(ano, mes, d).weekday()
         es_fest = es_festivo_co(d, mes, ano)
@@ -68,11 +85,11 @@ def generar_cuadro_pulp(mes, ano, historial_previo, sugerencias_dict, config_dic
             if d <= dias_mes - 3:
                 prob += (pulp.lpSum([x[p][d+k][t] for k in range(4) for t in turnos_asig]) <= 3)
 
-    # 4. Resolver
+    # 5. Resolver
     solver = pulp.PULP_CBC_CMD(msg=False)
     prob.solve(solver)
     
-    # 5. Mapeo a DataFrame
+    # 6. Mapeo a DataFrame
     df_res = pd.DataFrame(index=INTEGRANTES, columns=[str(d) for d in dias]).fillna("")
     
     for p in INTEGRANTES:
@@ -85,7 +102,9 @@ def generar_cuadro_pulp(mes, ano, historial_previo, sugerencias_dict, config_dic
             elif (wd in config_dict.get(p, [])) and not (p == "JUAN CAMILO PEREZ" and wd == 3):
                 df_res.at[p, ds] = 'L'
             else:
-                if d > 1 and df_res.at[p, str(d-1)] == 'N':
+                if d == 1 and hist_noche.get(p, False):
+                    df_res.at[p, ds] = 'P'
+                elif d > 1 and df_res.at[p, str(d-1)] == 'N':
                     df_res.at[p, ds] = 'P'
                 else:
                     asignado = False
