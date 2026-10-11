@@ -3,3 +3,4 @@ pandas
 openpyxl
 xlsxwriter
 holidays
+pulp
