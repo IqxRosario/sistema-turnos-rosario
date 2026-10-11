@@ -61,12 +61,10 @@ def procesar_historial_empalme(archivo):
                 nom_sheet = normalizar_texto(r[col_nom])
                 nom_real = next((p for p in INTEGRANTES if nom_sheet in p or p in nom_sheet), None)
                 if nom_real:
-                    # 1. Verificar si el último día fue Noche
                     val_u = str(r[u_dia]).strip().upper()
                     if 'N' in val_u:
                         hist_noche[nom_real] = True
                     
-                    # 2. Contar racha de turnos seguidos (C o N) al final del mes
                     racha = 0
                     for d in reversed(cols_dias):
                         val = str(r[str(d)]).strip().upper()
@@ -169,10 +167,10 @@ with tab1:
     st.subheader("Optimización Matemática en 1 solo paso")
     if st.button("🚀 GENERAR CON OPTIMIZACIÓN", type="primary", use_container_width=True, key="btn_pulp"):
         conf, vacs, sug = procesar_configuracion_y_sugerencias(link_config)
-       hist_noche, hist_racha = procesar_historial_empalme(archivo_previo)
-
-with st.spinner('Simulando múltiples escenarios...'):
-    res = generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vacs)
+        hist_noche, hist_racha = procesar_historial_empalme(archivo_previo)
+        
+        with st.spinner('Resolviendo modelo de optimización matemática...'):
+            res = generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vacs)
             
         dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
         columnas_dias = [str(d) for d in range(1, dias_en_mes + 1)]
@@ -201,10 +199,10 @@ with tab2:
     iteraciones = st.slider("Número de simulaciones", 10, 200, 50)
     if st.button("🚀 GENERAR ESCENARIO SIMULADO", type="secondary", use_container_width=True, key="btn_clasico"):
         conf, vacs, sug = procesar_configuracion_y_sugerencias(link_config)
-       hist_noche, hist_racha = procesar_historial_empalme(archivo_previo)
-
-with st.spinner('Simulando múltiples escenarios...'):
-    res = generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vacs)
+        hist_noche, hist_racha = procesar_historial_empalme(archivo_previo)
+        
+        with st.spinner('Simulando múltiples escenarios...'):
+            res = generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vacs)
             
         dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
         columnas_dias = [str(d) for d in range(1, dias_en_mes + 1)]
