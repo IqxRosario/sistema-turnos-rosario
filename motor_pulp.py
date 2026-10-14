@@ -26,7 +26,7 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
     # Variables binarias
     x = pulp.LpVariable.dicts("x", (INTEGRANTES, dias, turnos_asig), cat=pulp.LpBinary)
     
-    # 2. Matriz de Pesos/Preferencias
+    # 2. Matriz de Pesos/Preferencias (Aquí entran los comodines)
     pesos = {}
     for p in INTEGRANTES:
         for d in dias:
@@ -34,39 +34,50 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
             wd = datetime.date(ano, mes, d).weekday()
             
             es_vacacion = d in vacaciones_dict.get(p, [])
-            es_libre_fijo = (wd in config_dict.get(p, [])) and not (p == "JUAN CAMILO PEREZ" and wd == 3)
+            req = sugerencias_dict.get(p, {}).get(ds, "")
             
             for t in turnos_asig:
-                if es_vacacion or es_libre_fijo:
+                if es_vacacion:
                     pesos[p, d, t] = -10000
+                elif req == 'L':
+                    pesos[p, d, t] = -500
+                elif req and t in req:
+                    pesos[p, d, t] = 100
                 else:
-                    req = sugerencias_dict.get(p, {}).get(ds, "")
-                    if req and t in req:
-                        pesos[p, d, t] = 100
-                    else:
-                        pesos[p, d, t] = 1
+                    peso_base = 1
+                    
+                    # Comodines (Preferencia alta de descansar, pero trabajan si hay crisis)
+                    if p == "JUAN CAMILO PEREZ" and wd in [1, 3]: # Martes y Jueves
+                        peso_base = -50
+                    elif p == "ERNESTO MUSKUS" and wd == 5:       # Sábado
+                        peso_base = -50
+                    elif p == "IVETTE VALENCIA" and wd == 5:      # Sábado
+                        peso_base = -50
+                        
+                    # Libre de la hoja Sheets (si no es comodín, se respeta estrictamente)
+                    elif wd in config_dict.get(p, []):
+                        peso_base = -10000
+                        
+                    pesos[p, d, t] = peso_base
                         
     prob += pulp.lpSum([x[p][d][t] * pesos[p, d, t] for p in INTEGRANTES for d in dias for t in turnos_asig])
     
-    # 3. Restricciones de Empalme con el Mes Anterior (Día 1 y Día 2)
+    # 3. Restricciones de Empalme con el Mes Anterior
     for p in INTEGRANTES:
-        # A) Si terminó en Noche (N) -> Día 1 obligatorio libre / post-noche
         if hist_noche.get(p, False):
             prob += x[p][1]['C'] == 0
             prob += x[p][1]['N'] == 0
-
-        # B) Si ya trae 3 o más turnos seguidos -> Día 1 OBLIGATORIO Descanso
+            
         racha_prev = hist_racha.get(p, 0)
         if racha_prev >= 3:
             prob += x[p][1]['C'] == 0
             prob += x[p][1]['N'] == 0
-
-        # C) Si trae 2 turnos seguidos -> Puede trabajar el Día 1, pero NO el Día 2
         elif racha_prev == 2:
             prob += x[p][1]['C'] + x[p][1]['N'] + x[p][2]['C'] + x[p][2]['N'] <= 1
 
-    # 4. Restricciones mensuales estándar
+    # 4. Restricciones mensuales estándar y REGLAS FIJAS DEL EQUIPO
     for d in dias:
+        ds = str(d)
         wd = datetime.date(ano, mes, d).weekday()
         es_fest = es_festivo_co(d, mes, ano)
         
@@ -76,6 +87,26 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
         prob += pulp.lpSum([x[p][d]['N'] for p in INTEGRANTES]) == cuota_n
         prob += pulp.lpSum([x[p][d]['C'] for p in INTEGRANTES]) == cuota_c
         
+        # --- REGLAS ESTRICTAS DE PROHIBICIÓN ---
+        # Estas reglas obligan al motor matemático a no asignar los turnos prohibidos, 
+        # A MENOS que la persona lo pida explícitamente en el Sheets.
+        req_iv = sugerencias_dict.get("IVETTE VALENCIA", {}).get(ds, "")
+        if wd == 0 and not any(t in req_iv for t in turnos_asig): # Ivette Lunes libre estricto
+            prob += x["IVETTE VALENCIA"][d]['C'] + x["IVETTE VALENCIA"][d]['N'] == 0
+            
+        req_jh = sugerencias_dict.get("JHON RIOS", {}).get(ds, "")
+        if wd == 1 and not ('C' in req_jh): # Jhon Martes no Corrido (Solo Libre o Noche)
+            prob += x["JHON RIOS"][d]['C'] == 0
+            
+        req_an = sugerencias_dict.get("ANGIE BERNAL", {}).get(ds, "")
+        if wd == 2 and not ('N' in req_an): # Angie Miércoles no Noche (Solo Libre o Corrido)
+            prob += x["ANGIE BERNAL"][d]['N'] == 0
+            
+        req_gi = sugerencias_dict.get("GINELAP", {}).get(ds, "")
+        if wd in [3, 4] and not any(t in req_gi for t in turnos_asig): # Ginelap Jueves y Viernes Libre
+            prob += x["GINELAP"][d]['C'] + x["GINELAP"][d]['N'] == 0
+        
+        # Lógica general de turnos
         for p in INTEGRANTES:
             prob += pulp.lpSum([x[p][d][t] for t in turnos_asig]) <= 1
             
@@ -84,6 +115,12 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
                 
             if d <= dias_mes - 3:
                 prob += (pulp.lpSum([x[p][d+k][t] for k in range(4) for t in turnos_asig]) <= 3)
+
+    # --- REGLA ESPECIAL GERLIS Y ZARIANA ---
+    # Máximo 2 Lunes al mes
+    lunes_del_mes = [d for d in dias if datetime.date(ano, mes, d).weekday() == 0]
+    for p in ["GERLIS DOMINGUEZ", "ZARIANA REYES"]:
+        prob += pulp.lpSum([x[p][d][t] for d in lunes_del_mes for t in turnos_asig]) <= 2
 
     # 5. Resolver
     solver = pulp.PULP_CBC_CMD(msg=False)
@@ -99,21 +136,37 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
             
             if d in vacaciones_dict.get(p, []):
                 df_res.at[p, ds] = 'V'
-            elif (wd in config_dict.get(p, [])) and not (p == "JUAN CAMILO PEREZ" and wd == 3):
-                df_res.at[p, ds] = 'L'
+            elif d == 1 and hist_noche.get(p, False):
+                df_res.at[p, ds] = 'P'
+            elif d > 1 and df_res.at[p, str(d-1)] == 'N':
+                df_res.at[p, ds] = 'P'
             else:
-                if d == 1 and hist_noche.get(p, False):
-                    df_res.at[p, ds] = 'P'
-                elif d > 1 and df_res.at[p, str(d-1)] == 'N':
-                    df_res.at[p, ds] = 'P'
-                else:
-                    asignado = False
-                    for t in turnos_asig:
-                        if pulp.value(x[p][d][t]) == 1:
-                            df_res.at[p, ds] = t
-                            asignado = True
-                            break
-                    if not asignado:
+                asignado = False
+                for t in turnos_asig:
+                    if pulp.value(x[p][d][t]) and pulp.value(x[p][d][t]) > 0.5:
+                        df_res.at[p, ds] = t
+                        asignado = True
+                        break
+                
+                if not asignado:
+                    req = sugerencias_dict.get(p, {}).get(ds, "")
+                    
+                    es_comodin = (p == "JUAN CAMILO PEREZ" and wd in [1, 3]) or \
+                                 (p == "ERNESTO MUSKUS" and wd == 5) or \
+                                 (p == "IVETTE VALENCIA" and wd == 5)
+                                 
+                    es_intocable = (p == "IVETTE VALENCIA" and wd == 0) or \
+                                   (p == "GINELAP" and wd in [3, 4])
+                                   
+                    es_lunes_gz = (p in ["GERLIS DOMINGUEZ", "ZARIANA REYES"] and wd == 0)
+                    
+                    if wd in config_dict.get(p, []):
+                        df_res.at[p, ds] = 'L'
+                    elif req == 'L':
+                        df_res.at[p, ds] = 'L'
+                    elif es_comodin or es_intocable or es_lunes_gz:
+                        df_res.at[p, ds] = 'L'
+                    else:
                         df_res.at[p, ds] = 'D'
                         
     df_res['TOTAL CORRIDOS'] = df_res.apply(lambda r: sum(1 for c in df_res.columns if 'C' in str(r[c]) and c.isdigit()), axis=1)
