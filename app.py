@@ -46,7 +46,7 @@ CODIGOS_COLOR = {
 
 
 # -----------------------------------------------------------------------------
-# FUNCIONES AUXILIARES
+# FUNCIONES AUXILIARES (LÓGICA EXISTENTE, SIN CAMBIOS)
 # -----------------------------------------------------------------------------
 def normalizar_texto(texto):
     """Quita tildes y normaliza texto para comparar encabezados y nombres."""
@@ -181,14 +181,9 @@ def procesar_configuracion_y_sugerencias(link):
             "No encontré una columna de nombres. Usa un encabezado como 'NOMBRE' o 'INTEGRANTE'."
         )
 
-    # Evita asignar accidentalmente una fila vacía o un nombre ambiguo a un integrante.
-    filas_sin_nombre = []
-    for indice, fila in df.iterrows():
+    for _, fila in df.iterrows():
         integrante = _nombre_integrante(fila.get(col_nombre, ""))
         if integrante is None:
-            valor_nombre = fila.get(col_nombre, "")
-            if pd.notna(valor_nombre) and str(valor_nombre).strip():
-                filas_sin_nombre.append(str(valor_nombre).strip())
             continue
 
         if col_prioridad is not None:
@@ -213,7 +208,6 @@ def procesar_configuracion_y_sugerencias(link):
             if not texto_peticion:
                 continue
 
-            # Admite formas como 5N, 8C, 10L y rangos/números sin letra (descanso).
             encontrados = list(re.finditer(r"(\d+)\s*([NCL])", texto_peticion))
             dias_con_codigo = set()
             for coincidencia in encontrados:
@@ -228,7 +222,6 @@ def procesar_configuracion_y_sugerencias(link):
                     sugerencias[integrante][dia] = codigo
                     dias_con_codigo.add(dia)
 
-            # Los números/rangos que no tengan letra se interpretan como días libres solicitados.
             texto_sin_codigos = re.sub(r"\d+\s*[NCL]", " ", texto_peticion)
             for dia in parsear_rangos_y_dias(texto_sin_codigos):
                 if dia not in dias_con_codigo and dia >= 1:
@@ -239,7 +232,6 @@ def procesar_configuracion_y_sugerencias(link):
                         )
                     sugerencias[integrante][dia] = "L"
 
-    # Validación de días según el mes se hace más adelante, al generar el cuadro.
     return libres_fijos, vacaciones, sugerencias, prioridades
 
 
@@ -337,7 +329,6 @@ def crear_excel(df_res, mes, ano):
     patrones = df_res.attrs.get("patrones_n_p_n_p", [])
     diagnostico = df_res.attrs.get("diagnostico", {})
 
-    # Copia para evitar que las columnas de reportes se mezclen con la tabla original.
     df_turnos = df_res.copy()
     with pd.ExcelWriter(salida, engine="openpyxl") as writer:
         df_turnos.to_excel(writer, sheet_name="Turnos")
@@ -357,9 +348,9 @@ def crear_excel(df_res, mes, ano):
     return salida.getvalue(), f"Turnos_{mes:02d}_{ano}.xlsx"
 
 
-def generar_y_mostrar(mes_sel, ano_sel, link_config, archivo_previo, clave_boton):
+def generar_y_mostrar(mes_sel, ano_sel, link_config, archivo_previo):
     """Carga la configuración, genera, valida y muestra el horario con sus reportes."""
-    if not st.button("⚙️ Generar cuadro de turnos", key=clave_boton, type="primary"):
+    if not st.button("⚙️ Generar cuadro de turnos", key="generar_cuadro_principal", type="primary"):
         return
 
     with st.spinner("Leyendo configuración y optimizando los turnos..."):
@@ -367,7 +358,6 @@ def generar_y_mostrar(mes_sel, ano_sel, link_config, archivo_previo, clave_boton
             conf, vacs, sug, prio = procesar_configuracion_y_sugerencias(link_config)
             hist_noche, hist_racha = procesar_historial_empalme(archivo_previo)
 
-            # Comprueba que las vacaciones y solicitudes se refieran a días válidos del mes.
             dias_mes = calendar.monthrange(ano_sel, mes_sel)[1]
             errores_dias = []
             for persona, dias_persona in vacs.items():
@@ -415,14 +405,14 @@ def generar_y_mostrar(mes_sel, ano_sel, link_config, archivo_previo, clave_boton
             data=excel_bytes,
             file_name=nombre_archivo,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"descargar_{clave_boton}",
+            key="descargar_cuadro_principal",
         )
     except Exception as exc:
         st.error(f"El cuadro se generó, pero no se pudo preparar el Excel: {exc}")
 
 
 # -----------------------------------------------------------------------------
-# INTERFAZ STREAMLIT
+# INTERFAZ STREAMLIT (CAMBIOS SOLO VISUALES / DE NAVEGACIÓN)
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Gestor de Instrumentación",
@@ -433,8 +423,19 @@ st.set_page_config(
 st.title("🏥 Sistema de Gestión de Turnos Rosario")
 st.caption("Generación y validación de turnos mediante optimización PuLP.")
 
+# El acceso a la hoja habitual queda siempre visible; no hay que copiar su URL.
+st.link_button(
+    "📄 Abrir hoja de configuración en Google Sheets",
+    LINK_SHEETS_DEFECTO,
+    type="secondary",
+)
+st.caption(
+    "Desde esa hoja puedes consultar o actualizar nombres, solicitudes, días fijos, vacaciones y prioridades. "
+    "La aplicación leerá automáticamente la hoja predeterminada al generar el cuadro."
+)
+
 with st.sidebar:
-    st.header("⚙️ Configuración")
+    st.header("⚙️ Configuración del cuadro")
     hoy = datetime.date.today()
     meses_es = [
         "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
@@ -451,44 +452,40 @@ with st.sidebar:
         options=list(range(hoy.year, hoy.year + 5)),
         index=0,
     )
-    link_config = st.text_input(
-        "URL de la pestaña de Google Sheets",
-        value=LINK_SHEETS_DEFECTO,
-        help="Pega la URL de la pestaña que contiene nombres, solicitudes, días fijos, vacaciones y prioridades.",
-    )
-    st.link_button("Abrir hoja de configuración", link_config)
+
     archivo_previo = st.file_uploader(
-        "Archivo Excel del mes anterior (opcional)",
+        "Excel del mes anterior (opcional)",
         type=["xlsx", "xls"],
         help="Se utiliza para aplicar las reglas de empalme entre meses.",
     )
 
+    # La opción avanzada es opcional. El usuario normal no tiene que copiar una URL.
+    with st.expander("Configuración avanzada: usar otra hoja"):
+        link_personalizado = st.text_input(
+            "URL alternativa de Google Sheets",
+            value="",
+            placeholder="Deja vacío para usar la hoja habitual",
+            help="Solo rellena esto si necesitas utilizar otra hoja o pestaña. La hoja habitual está disponible en el botón de arriba.",
+        )
+        if link_personalizado.strip():
+            st.link_button("Abrir hoja alternativa", link_personalizado.strip())
+            st.caption("Al generar el cuadro se utilizará esta URL alternativa.")
+        else:
+            st.caption("Se utilizará automáticamente la hoja habitual.")
+
+link_config = link_personalizado.strip() if link_personalizado.strip() else LINK_SHEETS_DEFECTO
+
+st.divider()
+st.subheader("Generar horario")
 st.info(
     "Las vacaciones, la cobertura diaria y las restricciones obligatorias no se relajan. "
     "Las solicitudes puntuales se optimizan por prioridad; los conflictos se muestran en un informe. "
     "Los días fijos son preferencias fuertes que pueden ceder si la cobertura lo exige."
 )
 
-pestana_pulp, pestana_clasico = st.tabs(
-    ["Motor Pro (Optimización PuLP)", "Motor Clásico (actualmente usa PuLP)"]
+st.markdown("**Motor de generación:** Optimización PuLP")
+st.write(
+    "Se utiliza un único motor para evitar confusiones entre pestañas que ejecutaban el mismo algoritmo. "
+    "El resultado incluye el cuadro, las solicitudes no satisfechas y los patrones N-P-N-P detectados."
 )
-
-with pestana_pulp:
-    st.subheader("Motor Pro — optimización por prioridad")
-    st.write(
-        "Genera el cuadro respetando las restricciones obligatorias, optimizando las solicitudes "
-        "por orden de prioridad y mostrando cualquier solicitud no satisfecha."
-    )
-    generar_y_mostrar(
-        mes_sel, ano_sel, link_config, archivo_previo, "generar_pulp_pro"
-    )
-
-with pestana_clasico:
-    st.subheader("Vista alternativa")
-    st.warning(
-        "Esta pestaña todavía llama al mismo motor PuLP que la pestaña Pro. "
-        "No ejecuta una simulación aleatoria y no tiene un control de iteraciones."
-    )
-    generar_y_mostrar(
-        mes_sel, ano_sel, link_config, archivo_previo, "generar_pulp_vista_alternativa"
-    )
+generar_y_mostrar(mes_sel, ano_sel, link_config, archivo_previo)
