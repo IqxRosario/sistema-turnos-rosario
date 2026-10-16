@@ -3,4 +3,4 @@ pandas
 openpyxl
 xlsxwriter
 holidays
-pulp
+pulp==3.3.2
