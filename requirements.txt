@@ -4,4 +4,3 @@ openpyxl
 xlsxwriter
 holidays
 pulp
-text
