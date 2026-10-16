@@ -1,7 +1,7 @@
 import calendar
 import datetime
 import pandas as pd
-import pulp
+from pulp import LpProblem, LpMaximize, LpVariable, LpBinary, lpSum, value, PULP_CBC_CMD
 
 INTEGRANTES = [
     "GERLIS DOMINGUEZ", "ANGIE BERNAL", "JHON RIOS", "MARCELA CASTRO",
@@ -27,33 +27,28 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
     turnos_asig = ['C', 'N']
     
     # 1. Crear problema de optimización
-    prob = pulp.LpProblem("Optimizacion_Turnos_Hospital", pulp.LpMaximize)
+    prob = LpProblem("Optimizacion_Turnos_Hospital", LpMaximize)
     
-    # Diccionario explícito de variables binarias (evita errores de sintaxis y espacios)
-    x = {
-        p: {
-            d: {
-                t: pulp.LpVariable(f"x_{p.replace(' ', '_')}_{d}_{t}", cat='Binary')
-                for t in turnos_asig
-            }
-            for d in dias
-        }
-        for p in INTEGRANTES
-    }
+    # Declaración de variables binarias estándar
+    x = {}
+    for p in INTEGRANTES:
+        x[p] = {}
+        p_clean = p.replace(' ', '_')
+        for d in dias:
+            x[p][d] = {}
+            for t in turnos_asig:
+                x[p][d][t] = LpVariable(f"x_{p_clean}_{d}_{t}", 0, 1, LpBinary)
     
-    # 2. Matriz de Pesos/Preferencias (Escalonadas por Orden de Llegada)
+    # 2. Matriz de Pesos/Preferencias por Orden de Llegada
     pesos = {}
     for p in INTEGRANTES:
         orden = prioridades_dict.get(p, 99)
-        
-        # Ponderación dinámica según número de llegada
         puntos_peticion_turno = max(100, 1000 - (orden * 10))
         penalizacion_peticion_libre = min(-300, -1000 + (orden * 10))
         
         for d in dias:
             ds = str(d)
             wd = datetime.date(ano, mes, d).weekday()
-            
             es_vacacion = d in vacaciones_dict.get(p, [])
             req = sugerencias_dict.get(p, {}).get(ds, "")
             
@@ -66,20 +61,18 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
                     pesos[p, d, t] = puntos_peticion_turno
                 else:
                     peso_base = 1
-                    
-                    # Comodines
-                    if p == "JUAN CAMILO PEREZ" and wd in [1, 3]: # Martes y Jueves
+                    if p == "JUAN CAMILO PEREZ" and wd in [1, 3]:
                         peso_base = -50
-                    elif p == "ERNESTO MUSKUS" and wd == 5:       # Sábado
+                    elif p == "ERNESTO MUSKUS" and wd == 5:
                         peso_base = -50
-                    elif p == "IVETTE VALENCIA" and wd == 5:      # Sábado
+                    elif p == "IVETTE VALENCIA" and wd == 5:
                         peso_base = -50
                     elif wd in config_dict.get(p, []):
                         peso_base = -10000
                         
                     pesos[p, d, t] = peso_base
                         
-    prob += pulp.lpSum([x[p][d][t] * pesos[p, d, t] for p in INTEGRANTES for d in dias for t in turnos_asig])
+    prob += lpSum([x[p][d][t] * pesos[p, d, t] for p in INTEGRANTES for d in dias for t in turnos_asig])
     
     # 3. Restricciones de Empalme con el Mes Anterior
     for p in INTEGRANTES:
@@ -94,7 +87,7 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
         elif racha_prev == 2:
             prob += x[p][1]['C'] + x[p][1]['N'] + x[p][2]['C'] + x[p][2]['N'] <= 1
 
-    # 4. Restricciones mensuales estándar y REGLAS FIJAS DEL EQUIPO
+    # 4. Restricciones Mensuales y Reglas del Equipo
     for d in dias:
         ds = str(d)
         wd = datetime.date(ano, mes, d).weekday()
@@ -103,10 +96,10 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
         cuota_n = 2
         cuota_c = 2 if (es_fest or wd == 6) else (5 if wd == 5 else 6)
         
-        prob += pulp.lpSum([x[p][d]['N'] for p in INTEGRANTES]) == cuota_n
-        prob += pulp.lpSum([x[p][d]['C'] for p in INTEGRANTES]) == cuota_c
+        prob += lpSum([x[p][d]['N'] for p in INTEGRANTES]) == cuota_n
+        prob += lpSum([x[p][d]['C'] for p in INTEGRANTES]) == cuota_c
         
-        # --- REGLAS ESTRICTAS DE PROHIBICIÓN ---
+        # Prohibiciones estrictas
         req_iv = sugerencias_dict.get("IVETTE VALENCIA", {}).get(ds, "")
         if wd == 0 and not any(t in req_iv for t in turnos_asig):
             prob += x["IVETTE VALENCIA"][d]['C'] + x["IVETTE VALENCIA"][d]['N'] == 0
@@ -123,29 +116,27 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
         if wd in [3, 4] and not any(t in req_gi for t in turnos_asig):
             prob += x["GINELAP"][d]['C'] + x["GINELAP"][d]['N'] == 0
         
-        # Lógica general de turnos
+        # Turnos por persona
         for p in INTEGRANTES:
-            prob += pulp.lpSum([x[p][d][t] for t in turnos_asig]) <= 1
-            
+            prob += lpSum([x[p][d][t] for t in turnos_asig]) <= 1
             if d < dias_mes:
                 prob += x[p][d]['N'] + x[p][d+1]['C'] + x[p][d+1]['N'] <= 1
-                
             if d <= dias_mes - 3:
-                prob += (pulp.lpSum([x[p][d+k][t] for k in range(4) for t in turnos_asig]) <= 3)
+                prob += (lpSum([x[p][d+k][t] for k in range(4) for t in turnos_asig]) <= 3)
 
     # Máximo 2 Lunes al mes para Gerlis y Zariana
     lunes_del_mes = [d for d in dias if datetime.date(ano, mes, d).weekday() == 0]
     for p in ["GERLIS DOMINGUEZ", "ZARIANA REYES"]:
-        prob += pulp.lpSum([x[p][d][t] for d in lunes_del_mes for t in turnos_asig]) <= 2
+        prob += lpSum([x[p][d][t] for d in lunes_del_mes for t in turnos_asig]) <= 2
 
-    # 5. Resolver con manejo seguro de solver
+    # 5. Resolver
     try:
-        solver = pulp.PULP_CBC_CMD(msg=False)
+        solver = PULP_CBC_CMD(msg=False)
         prob.solve(solver)
     except Exception:
         prob.solve()
     
-    # 6. Mapeo a DataFrame
+    # 6. Mapeo a DataFrame de salida
     df_res = pd.DataFrame(index=INTEGRANTES, columns=[str(d) for d in dias]).fillna("")
     
     for p in INTEGRANTES:
@@ -162,7 +153,7 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
             else:
                 asignado = False
                 for t in turnos_asig:
-                    val = pulp.value(x[p][d][t])
+                    val = value(x[p][d][t])
                     if val is not None and val > 0.5:
                         df_res.at[p, ds] = t
                         asignado = True
@@ -170,14 +161,11 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
                 
                 if not asignado:
                     req = sugerencias_dict.get(p, {}).get(ds, "")
-                    
                     es_comodin = (p == "JUAN CAMILO PEREZ" and wd in [1, 3]) or \
                                  (p == "ERNESTO MUSKUS" and wd == 5) or \
                                  (p == "IVETTE VALENCIA" and wd == 5)
-                                 
                     es_intocable = (p == "IVETTE VALENCIA" and wd == 0) or \
                                    (p == "GINELAP" and wd in [3, 4])
-                                   
                     es_lunes_gz = (p in ["GERLIS DOMINGUEZ", "ZARIANA REYES"] and wd == 0)
                     
                     if wd in config_dict.get(p, []):
