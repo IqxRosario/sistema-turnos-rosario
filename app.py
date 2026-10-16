@@ -84,9 +84,10 @@ def procesar_configuracion_y_sugerencias(link):
     libres_fijos = {p: [] for p in INTEGRANTES}
     vacaciones = {p: [] for p in INTEGRANTES}
     sugerencias = {p: {} for p in INTEGRANTES}
+    prioridades = {p: 99 for p in INTEGRANTES}
     
     if not link or not link.startswith("http"):
-        return libres_fijos, vacaciones, sugerencias
+        return libres_fijos, vacaciones, sugerencias, prioridades
         
     try:
         base_url = link.split('/edit')[0]
@@ -102,6 +103,7 @@ def procesar_configuracion_y_sugerencias(link):
         col_sug = next((c for c in df.columns if 'PETICION' in c or 'LIBRES SOLICITADO' in c or 'SUGERENCIA' in c), None)
         col_fijo = next((c for c in df.columns if 'FIJO' in c or 'ESTUDIO' in c), None)
         col_vac = next((c for c in df.columns if 'VACACIO' in c), None)
+        col_prio = next((c for c in df.columns if 'ORDEN' in c or 'PRIORIDAD' in c or 'LLEGADA' in c), None)
         
         if col_nom:
             for _, r in df.iterrows():
@@ -109,6 +111,10 @@ def procesar_configuracion_y_sugerencias(link):
                 nom_real = next((p for p in INTEGRANTES if nom_sheet in p or p in nom_sheet), None)
                 
                 if nom_real:
+                    # 0. Prioridad por Orden de Llegada
+                    if col_prio and str(r[col_prio]).replace('.0', '').isdigit():
+                        prioridades[nom_real] = int(float(r[col_prio]))
+
                     # 1. Libres Fijos
                     if col_fijo and str(r[col_fijo]) != 'nan':
                         txt_fijo = normalizar_texto(r[col_fijo])
@@ -138,7 +144,7 @@ def procesar_configuracion_y_sugerencias(link):
     except Exception as e:
         st.error(f"Error procesando plantilla Google Sheets: {e}")
         
-    return libres_fijos, vacaciones, sugerencias
+    return libres_fijos, vacaciones, sugerencias, prioridades
 
 def aplicar_colores(val):
     v = str(val).strip()
@@ -159,8 +165,6 @@ ano_sel = st.sidebar.number_input("Año", min_value=2024, max_value=2030, value=
 
 st.sidebar.header("🔗 Conexión a Google Sheets")
 link_config = st.sidebar.text_input("Link Hoja Unificada (Google Sheets)", value=LINK_SHEETS_DEFECTO)
-
-# Botón directo para abrir la hoja en una pestaña nueva
 st.sidebar.link_button("📊 Abrir Hoja en Google Sheets", LINK_SHEETS_DEFECTO, use_container_width=True)
 
 archivo_previo = st.file_uploader("📁 Cargar Excel de empalme mes anterior (Opcional)", type=["xlsx"])
@@ -171,16 +175,16 @@ tab1, tab2 = st.tabs(["⚡ Motor Pro (Optimización PuLP)", "🎲 Motor Clásico
 with tab1:
     st.subheader("Optimización Matemática en 1 solo paso")
     if st.button("🚀 GENERAR CON OPTIMIZACIÓN", type="primary", use_container_width=True, key="btn_pulp"):
-        conf, vacs, sug = procesar_configuracion_y_sugerencias(link_config)
+        conf, vacs, sug, prio = procesar_configuracion_y_sugerencias(link_config)
         hist_noche, hist_racha = procesar_historial_empalme(archivo_previo)
         
         with st.spinner('Resolviendo modelo de optimización matemática...'):
-            res = generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vacs)
+            res = generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vacs, prio)
             
         dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
         columnas_dias = [str(d) for d in range(1, dias_en_mes + 1)]
         
-        st.success("✅ ¡Turnos calculados matemáticamente sin errores de restricciones!")
+        st.success("✅ ¡Turnos calculados matemáticamente respetando orden de llegada y restricciones!")
         st.dataframe(res.style.map(aplicar_colores, subset=columnas_dias), use_container_width=True)
         
         output = io.BytesIO()
@@ -203,11 +207,11 @@ with tab2:
     st.subheader("Simulación por N-iteraciones aleatorias")
     iteraciones = st.slider("Número de simulaciones", 10, 200, 50)
     if st.button("🚀 GENERAR ESCENARIO SIMULADO", type="secondary", use_container_width=True, key="btn_clasico"):
-        conf, vacs, sug = procesar_configuracion_y_sugerencias(link_config)
+        conf, vacs, sug, prio = procesar_configuracion_y_sugerencias(link_config)
         hist_noche, hist_racha = procesar_historial_empalme(archivo_previo)
         
         with st.spinner('Simulando múltiples escenarios...'):
-            res = generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vacs)
+            res = generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vacs, prio)
             
         dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
         columnas_dias = [str(d) for d in range(1, dias_en_mes + 1)]
