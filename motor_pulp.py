@@ -1,15 +1,15 @@
-
 import calendar
 import datetime
 import pandas as pd
 from pulp import (
     LpProblem,
     LpMaximize,
+    LpMinimize,
     LpVariable,
     LpBinary,
     LpStatus,
     lpSum,
-    value
+    value,
 )
 
 INTEGRANTES = [
@@ -20,13 +20,36 @@ INTEGRANTES = [
 ]
 
 
+class ErrorCuadroInviable(RuntimeError):
+    """El modelo no puede satisfacer simultáneamente sus reglas obligatorias."""
+
+
 def es_festivo_co(dia, mes, ano):
     try:
         import holidays
-        co_holidays = holidays.CO(years=ano)
-        return datetime.date(ano, mes, dia) in co_holidays
+        return datetime.date(ano, mes, dia) in holidays.CO(years=ano)
     except Exception:
+        # Mantiene el comportamiento previo si el paquete holidays no está disponible.
         return False
+
+
+def _prioridad_entera(valor):
+    try:
+        if pd.isna(valor):
+            return 99
+        return int(float(valor))
+    except (TypeError, ValueError):
+        return 99
+
+
+def _obtener_solicitud(sugerencias_dict, persona, dia):
+    """Acepta claves de día int o str y normaliza la letra de solicitud."""
+    solicitudes = sugerencias_dict.get(persona, {}) or {}
+    valor = solicitudes.get(str(dia), solicitudes.get(dia, ""))
+    if valor is None:
+        return ""
+    valor = str(valor).strip().upper()
+    return valor if valor in {"L", "C", "N"} else ""
 
 
 def generar_cuadro_pulp(
@@ -37,336 +60,350 @@ def generar_cuadro_pulp(
     sugerencias_dict,
     config_dict,
     vacaciones_dict,
-    prioridades_dict=None
+    prioridades_dict=None,
 ):
+    """Genera turnos con reglas obligatorias y solicitudes por prioridad lexicográfica.
+
+    Orden de optimización:
+      1. Restricciones obligatorias (cobertura, vacaciones, descansos, etc.).
+      2. Minimizar solicitudes incumplidas, por nivel de prioridad ascendente
+         (un número menor representa mayor prioridad).
+      3. Preferencias flexibles: evitar N-P-N-P, respetar días fijos siempre que
+         la cobertura lo permita y conservar las preferencias históricas.
+
+    El DataFrame devuelto conserva el formato anterior. Los reportes se adjuntan
+    en df.attrs['incumplimientos'] y df.attrs['diagnostico'].
+    """
     if prioridades_dict is None:
         prioridades_dict = {p: 99 for p in INTEGRANTES}
 
+    sugerencias_dict = sugerencias_dict or {}
+    config_dict = config_dict or {}
+    vacaciones_dict = vacaciones_dict or {}
+    hist_noche = hist_noche or {}
+    hist_racha = hist_racha or {}
+
     dias_mes = calendar.monthrange(ano, mes)[1]
     dias = list(range(1, dias_mes + 1))
-    turnos_asig = ['C', 'N']
-
-    # 1. Crear problema de optimización
+    turnos = ("C", "N")
     prob = LpProblem("Optimizacion_Turnos_Hospital", LpMaximize)
 
-    # Variables binarias de asignación
-    x = {}
-
-    for p in INTEGRANTES:
-        x[p] = {}
-        p_clean = p.replace(' ', '_')
-
-        for d in dias:
-            x[p][d] = {}
-
-            for t in turnos_asig:
-                x[p][d][t] = LpVariable(
-                    f"x_{p_clean}_{d}_{t}",
-                    lowBound=0,
-                    upBound=1,
-                    cat=LpBinary
-                )
-
-    # 2. Matriz de pesos y preferencias por orden de llegada
-    pesos = {}
-
-    for p in INTEGRANTES:
-        orden = prioridades_dict.get(p, 99)
-        puntos_peticion_turno = max(100, 1000 - (orden * 10))
-        penalizacion_peticion_libre = min(-300, -1000 + (orden * 10))
-
-        for d in dias:
-            ds = str(d)
-            wd = datetime.date(ano, mes, d).weekday()
-            es_vacacion = d in vacaciones_dict.get(p, [])
-            req = sugerencias_dict.get(p, {}).get(ds, "")
-
-            for t in turnos_asig:
-                if es_vacacion:
-                    pesos[p, d, t] = -10000
-
-                elif req == 'L':
-                    pesos[p, d, t] = penalizacion_peticion_libre
-
-                elif req and t in req:
-                    pesos[p, d, t] = puntos_peticion_turno
-
-                else:
-                    peso_base = 1
-
-                    if p == "JUAN CAMILO PEREZ" and wd in [1, 3]:
-                        peso_base = -50
-
-                    elif p == "ERNESTO MUSKUS" and wd == 5:
-                        peso_base = -50
-
-                    elif p == "IVETTE VALENCIA" and wd == 5:
-                        peso_base = -50
-
-                    elif wd in config_dict.get(p, []):
-                        peso_base = -10000
-
-                    pesos[p, d, t] = peso_base
-
-    prob += lpSum(
-        x[p][d][t] * pesos[p, d, t]
+    # Variables de asignación.
+    x = {
+        p: {
+            d: {
+                t: LpVariable(f"x_{p.replace(' ', '_')}_{d}_{t}", cat=LpBinary)
+                for t in turnos
+            }
+            for d in dias
+        }
         for p in INTEGRANTES
-        for d in dias
-        for t in turnos_asig
-    )
+    }
 
-    # 3. Restricciones de empalme con el mes anterior
+    # Cada solicitud tiene una variable de incumplimiento. Estas variables no
+    # permiten romper las reglas duras; solo hacen explícita la petición no atendida.
+    incumple = {}
+    prioridad_persona = {
+        p: _prioridad_entera(prioridades_dict.get(p, 99)) for p in INTEGRANTES
+    }
+    solicitudes_por_prioridad = {}
+    for p in INTEGRANTES:
+        for d in dias:
+            req = _obtener_solicitud(sugerencias_dict, p, d)
+            if not req:
+                continue
+            y = LpVariable(f"incumple_{p.replace(' ', '_')}_{d}", cat=LpBinary)
+            incumple[p, d] = y
+            nivel = prioridad_persona[p]
+            solicitudes_por_prioridad.setdefault(nivel, []).append(y)
+
+            if req == "L":
+                # Si se trabaja, la solicitud de libre queda incumplida.
+                prob += x[p][d]["C"] + x[p][d]["N"] <= y, f"solicitud_libre_{p.replace(' ', '_')}_{d}"
+            else:
+                # Se pide el turno exacto; si no se asigna, la petición se incumple.
+                prob += x[p][d][req] + y >= 1, f"solicitud_turno_{p.replace(' ', '_')}_{d}"
+
+    # Reglas obligatorias de empalme entre meses.
     for p in INTEGRANTES:
         if hist_noche.get(p, False):
-            prob += x[p][1]['C'] == 0
-            prob += x[p][1]['N'] == 0
+            prob += x[p][1]["C"] == 0, f"empalme_noche_C_{p.replace(' ', '_')}"
+            prob += x[p][1]["N"] == 0, f"empalme_noche_N_{p.replace(' ', '_')}"
 
-        racha_prev = hist_racha.get(p, 0)
-
-        if racha_prev >= 3:
-            prob += x[p][1]['C'] == 0
-            prob += x[p][1]['N'] == 0
-
-        elif racha_prev == 2:
+        racha = max(0, int(hist_racha.get(p, 0) or 0))
+        if racha >= 3:
+            prob += x[p][1]["C"] + x[p][1]["N"] == 0, f"empalme_racha3_{p.replace(' ', '_')}"
+        elif racha == 2:
             prob += (
-                x[p][1]['C'] + x[p][1]['N']
-                + x[p][2]['C'] + x[p][2]['N'] <= 1
+                x[p][1]["C"] + x[p][1]["N"] + x[p][2]["C"] + x[p][2]["N"] <= 1,
+                f"empalme_racha2_{p.replace(' ', '_')}"
             )
-
-    # 4. Restricciones mensuales y reglas del equipo
-    for d in dias:
-        ds = str(d)
-        wd = datetime.date(ano, mes, d).weekday()
-        es_fest = es_festivo_co(d, mes, ano)
-
-        # Cobertura diaria original
-        cuota_n = 2
-        cuota_c = (
-            2 if (es_fest or wd == 6)
-            else (5 if wd == 5 else 6)
-        )
-
-        prob += lpSum(
-            x[p][d]['N'] for p in INTEGRANTES
-        ) == cuota_n
-
-        prob += lpSum(
-            x[p][d]['C'] for p in INTEGRANTES
-        ) == cuota_c
-
-        # Prohibiciones estrictas originales
-        req_iv = sugerencias_dict.get(
-            "IVETTE VALENCIA", {}
-        ).get(ds, "")
-
-        if wd == 0 and not any(t in req_iv for t in turnos_asig):
-            prob += (
-                x["IVETTE VALENCIA"][d]['C']
-                + x["IVETTE VALENCIA"][d]['N'] == 0
-            )
-
-        req_jh = sugerencias_dict.get(
-            "JHON RIOS", {}
-        ).get(ds, "")
-
-        if wd == 1 and not ('C' in req_jh):
-            prob += x["JHON RIOS"][d]['C'] == 0
-
-        req_an = sugerencias_dict.get(
-            "ANGIE BERNAL", {}
-        ).get(ds, "")
-
-        if wd == 2 and not ('N' in req_an):
-            prob += x["ANGIE BERNAL"][d]['N'] == 0
-
-        req_gi = sugerencias_dict.get(
-            "GINELAP", {}
-        ).get(ds, "")
-
-        if wd in [3, 4] and not any(t in req_gi for t in turnos_asig):
-            prob += (
-                x["GINELAP"][d]['C']
-                + x["GINELAP"][d]['N'] == 0
-            )
-
-        # Turnos por persona: máximo uno al día,
-        # descanso después de noche y máximo 3 turnos en 4 días
-        for p in INTEGRANTES:
+        elif racha == 1 and dias_mes >= 3:
+            # Un turno el último día anterior + máximo 2 en los primeros 3 días.
             prob += lpSum(
-                x[p][d][t] for t in turnos_asig
-            ) <= 1
+                x[p][d][t] for d in range(1, 4) for t in turnos
+            ) <= 2, f"empalme_racha1_{p.replace(' ', '_')}"
 
+    # Cobertura, vacaciones y restricciones individuales.
+    for d in dias:
+        wd = datetime.date(ano, mes, d).weekday()
+        es_festivo = es_festivo_co(d, mes, ano)
+        cuota_n = 2
+        cuota_c = 2 if (es_festivo or wd == 6) else (5 if wd == 5 else 6)
+
+        prob += lpSum(x[p][d]["N"] for p in INTEGRANTES) == cuota_n, f"cobertura_N_{d}"
+        prob += lpSum(x[p][d]["C"] for p in INTEGRANTES) == cuota_c, f"cobertura_C_{d}"
+
+        # Vacaciones siempre intocables.
+        for p in INTEGRANTES:
+            vacaciones_p = {int(v) for v in (vacaciones_dict.get(p, []) or []) if str(v).strip().isdigit()}
+            if d in vacaciones_p:
+                prob += x[p][d]["C"] == 0, f"vacacion_C_{p.replace(' ', '_')}_{d}"
+                prob += x[p][d]["N"] == 0, f"vacacion_N_{p.replace(' ', '_')}_{d}"
+
+            # Máximo un turno diario.
+            prob += x[p][d]["C"] + x[p][d]["N"] <= 1, f"max_un_turno_{p.replace(' ', '_')}_{d}"
+
+            # Después de una noche, no puede trabajar C ni N al día siguiente.
             if d < dias_mes:
                 prob += (
-                    x[p][d]['N']
-                    + x[p][d + 1]['C']
-                    + x[p][d + 1]['N'] <= 1
+                    x[p][d]["N"] + x[p][d + 1]["C"] + x[p][d + 1]["N"] <= 1,
+                    f"descanso_post_noche_{p.replace(' ', '_')}_{d}"
                 )
 
+            # Máximo 3 turnos C/N en cualquier ventana de 4 días.
             if d <= dias_mes - 3:
                 prob += lpSum(
-                    x[p][d + k][t]
-                    for k in range(4)
-                    for t in turnos_asig
-                ) <= 3
+                    x[p][d + k][t] for k in range(4) for t in turnos
+                ) <= 3, f"max_3_en_4_{p.replace(' ', '_')}_{d}"
 
-    # 4.1. NUEVA RESTRICCIÓN: entre 4 y 5 noches por persona al mes
+        # Restricciones particulares que ya existían. Las solicitudes del turno
+        # correspondiente pueden habilitar la excepción, como en el código original.
+        req_iv = _obtener_solicitud(sugerencias_dict, "IVETTE VALENCIA", d)
+        if wd == 0 and not req_iv in {"C", "N"}:
+            prob += x["IVETTE VALENCIA"][d]["C"] + x["IVETTE VALENCIA"][d]["N"] == 0, f"ivette_lunes_{d}"
+
+        req_jh = _obtener_solicitud(sugerencias_dict, "JHON RIOS", d)
+        if wd == 1 and req_jh != "C":
+            prob += x["JHON RIOS"][d]["C"] == 0, f"jhon_martes_C_{d}"
+
+        req_an = _obtener_solicitud(sugerencias_dict, "ANGIE BERNAL", d)
+        if wd == 2 and req_an != "N":
+            prob += x["ANGIE BERNAL"][d]["N"] == 0, f"angie_miercoles_N_{d}"
+
+        req_gi = _obtener_solicitud(sugerencias_dict, "GINELAP", d)
+        if wd in (3, 4) and req_gi not in {"C", "N"}:
+            prob += x["GINELAP"][d]["C"] + x["GINELAP"][d]["N"] == 0, f"ginelap_jueves_viernes_{d}"
+
+    # Entre 4 y 5 noches por integrante al mes.
     for p in INTEGRANTES:
-        total_noches_p = lpSum(
-            x[p][d]['N'] for d in dias
-        )
+        total_n = lpSum(x[p][d]["N"] for d in dias)
+        prob += total_n >= 4, f"min_noches_{p.replace(' ', '_')}"
+        prob += total_n <= 5, f"max_noches_{p.replace(' ', '_')}"
 
-        p_clean = p.replace(' ', '_')
+    # Máximo 2 lunes trabajados para Gerlis y Zariana.
+    lunes = [d for d in dias if datetime.date(ano, mes, d).weekday() == 0]
+    for p in ("GERLIS DOMINGUEZ", "ZARIANA REYES"):
+        prob += lpSum(x[p][d][t] for d in lunes for t in turnos) <= 2, f"max_dos_lunes_{p.replace(' ', '_')}"
 
-        prob += (
-            total_noches_p >= 4,
-            f"min_noches_{p_clean}"
-        )
+    # 1) Optimización lexicográfica: se fija el mejor resultado de cada nivel
+    # de prioridad antes de pasar al siguiente. Número menor = prioridad mayor.
+    prioridades_ordenadas = sorted(solicitudes_por_prioridad)
+    if prioridades_ordenadas:
+        for indice, nivel in enumerate(prioridades_ordenadas):
+            objetivo_nivel = lpSum(solicitudes_por_prioridad[nivel])
+            prob.sense = LpMinimize
+            prob.setObjective(objetivo_nivel)
+            prob.solve()
+            estado = LpStatus.get(prob.status, str(prob.status))
+            if estado != "Optimal":
+                raise ErrorCuadroInviable(
+                    f"No existe un cuadro que cumpla las restricciones obligatorias para {mes:02d}/{ano}. "
+                    f"Estado de PuLP: {estado}. Revisa cobertura, vacaciones, descansos y reglas individuales."
+                )
+            mejor_valor = int(round(value(objetivo_nivel) or 0))
+            prob += objetivo_nivel == mejor_valor, f"fijar_prioridad_{indice}_{nivel}"
 
-        prob += (
-            total_noches_p <= 5,
-            f"max_noches_{p_clean}"
-        )
+    # 2) Preferencias flexibles: evitar N-P-N-P y conservar días fijos libres.
+    # El patrón N-P-N-P equivale a dos noches separadas por dos días.
+    penaliza_patron = {}
+    for p in INTEGRANTES:
+        for d in range(1, dias_mes - 1):
+            z = LpVariable(f"patron_NPNP_{p.replace(' ', '_')}_{d}", cat=LpBinary)
+            penaliza_patron[p, d] = z
+            prob += z >= x[p][d]["N"] + x[p][d + 2]["N"] - 1, f"detectar_patron_NPNP_{p.replace(' ', '_')}_{d}"
 
-    # Máximo 2 lunes al mes para Gerlis y Zariana
-    lunes_del_mes = [
-        d for d in dias
-        if datetime.date(ano, mes, d).weekday() == 0
-    ]
+    pesos_flexibles = []
+    for p in INTEGRANTES:
+        dias_fijos = set(config_dict.get(p, []) or [])
+        for d in dias:
+            wd = datetime.date(ano, mes, d).weekday()
+            req = _obtener_solicitud(sugerencias_dict, p, d)
+            for t in turnos:
+                # Una solicitud se optimiza en la fase lexicográfica; aquí no se
+                # vuelve a premiar ni castigar para no alterar la prioridad.
+                if req:
+                    peso = 0
+                elif wd in dias_fijos:
+                    peso = -10000
+                elif (p == "JUAN CAMILO PEREZ" and wd in (1, 3)) or (
+                    p in ("ERNESTO MUSKUS", "IVETTE VALENCIA") and wd == 5
+                ):
+                    peso = -50
+                else:
+                    peso = 1
+                pesos_flexibles.append(peso * x[p][d][t])
 
-    for p in ["GERLIS DOMINGUEZ", "ZARIANA REYES"]:
-        prob += lpSum(
-            x[p][d][t]
-            for d in lunes_del_mes
-            for t in turnos_asig
-        ) <= 2
-
-    # 5. Resolver y comprobar el resultado
+    # Minimizar patrones tiene más importancia que las preferencias flexibles.
+    # Se maximiza el resto y se resta una penalización grande por patrón.
+    objetivo_final = lpSum(pesos_flexibles) - 200 * lpSum(penaliza_patron.values())
+    prob.sense = LpMaximize
+    prob.setObjective(objetivo_final)
     prob.solve()
-
     estado = LpStatus.get(prob.status, str(prob.status))
-
     if estado != "Optimal":
-        raise RuntimeError(
-            f"No se pudo generar un cuadro válido para "
-            f"{mes:02d}/{ano}. Estado del optimizador: {estado}. "
-            "Revisa las restricciones, las vacaciones, los días "
-            "configurados y el límite de 4 a 5 noches por persona."
+        raise ErrorCuadroInviable(
+            f"No se pudo obtener una solución final válida para {mes:02d}/{ano}. Estado de PuLP: {estado}."
         )
 
-    # 5.1. Verificación adicional de noches antes de crear el cuadro
+    # Validación independiente de las asignaciones antes de construir la tabla.
+    asignaciones = {}
+    errores_validacion = []
     for p in INTEGRANTES:
-        noches_asignadas = sum(
-            1
-            for d in dias
-            if value(x[p][d]['N']) is not None
-            and value(x[p][d]['N']) > 0.5
-        )
-
-        if not 4 <= noches_asignadas <= 5:
-            raise RuntimeError(
-                f"Validación fallida para {p}: "
-                f"se encontraron {noches_asignadas} noches. "
-                "El cuadro no se puede considerar válido."
+        for d in dias:
+            asignaciones[p, d] = next(
+                (t for t in turnos if (value(x[p][d][t]) or 0) > 0.5), ""
             )
+            vacs_p = {int(v) for v in (vacaciones_dict.get(p, []) or []) if str(v).strip().isdigit()}
+            if d in vacs_p and asignaciones[p, d]:
+                errores_validacion.append(f"{p}, día {d}: turno asignado durante vacaciones")
 
-    # 6. Mapeo al DataFrame de salida
-    df_res = pd.DataFrame(
-        index=INTEGRANTES,
-        columns=[str(d) for d in dias]
-    ).fillna("")
-
+    for d in dias:
+        n_real = sum(asignaciones[p, d] == "N" for p in INTEGRANTES)
+        c_real = sum(asignaciones[p, d] == "C" for p in INTEGRANTES)
+        wd = datetime.date(ano, mes, d).weekday()
+        c_esperado = 2 if (es_festivo_co(d, mes, ano) or wd == 6) else (5 if wd == 5 else 6)
+        if n_real != 2 or c_real != c_esperado:
+            errores_validacion.append(
+                f"Día {d}: cobertura N={n_real}/2, C={c_real}/{c_esperado}"
+            )
     for p in INTEGRANTES:
+        noches = sum(asignaciones[p, d] == "N" for d in dias)
+        if not 4 <= noches <= 5:
+            errores_validacion.append(f"{p}: {noches} noches (debe tener entre 4 y 5)")
+        for d in dias[:-1]:
+            if asignaciones[p, d] == "N" and asignaciones[p, d + 1] in {"C", "N"}:
+                errores_validacion.append(f"{p}: no descansa después de N en día {d}")
+        for d in range(1, dias_mes - 2):
+            total_4 = sum(bool(asignaciones[p, d + k]) for k in range(4))
+            if total_4 > 3:
+                errores_validacion.append(f"{p}: más de 3 turnos en los días {d}-{d + 3}")
+
+    # Validar también las reglas individuales y los límites de lunes.
+    for d in dias:
+        wd = datetime.date(ano, mes, d).weekday()
+        req_iv = _obtener_solicitud(sugerencias_dict, "IVETTE VALENCIA", d)
+        if wd == 0 and req_iv not in {"C", "N"} and asignaciones["IVETTE VALENCIA", d]:
+            errores_validacion.append(f"Ivette: turno prohibido el lunes {d}")
+        req_jh = _obtener_solicitud(sugerencias_dict, "JHON RIOS", d)
+        if wd == 1 and req_jh != "C" and asignaciones["JHON RIOS", d] == "C":
+            errores_validacion.append(f"Jhon: C prohibido el martes {d}")
+        req_an = _obtener_solicitud(sugerencias_dict, "ANGIE BERNAL", d)
+        if wd == 2 and req_an != "N" and asignaciones["ANGIE BERNAL", d] == "N":
+            errores_validacion.append(f"Angie: N prohibida el miércoles {d}")
+        req_gi = _obtener_solicitud(sugerencias_dict, "GINELAP", d)
+        if wd in (3, 4) and req_gi not in {"C", "N"} and asignaciones["GINELAP", d]:
+            errores_validacion.append(f"Ginelap: turno prohibido el día {d}")
+
+    for p in ("GERLIS DOMINGUEZ", "ZARIANA REYES"):
+        lunes_trabajados = sum(
+            bool(asignaciones[p, d]) for d in dias
+            if datetime.date(ano, mes, d).weekday() == 0
+        )
+        if lunes_trabajados > 2:
+            errores_validacion.append(f"{p}: {lunes_trabajados} lunes trabajados (máximo 2)")
+
+    if errores_validacion:
+        raise RuntimeError("La validación independiente falló: " + "; ".join(errores_validacion[:12]))
+
+    # Crear la tabla visible. P se muestra después de N; V conserva prioridad visual,
+    # pero ya se comprobó que no oculta turnos asignados.
+    df = pd.DataFrame(index=INTEGRANTES, columns=[str(d) for d in dias]).fillna("")
+    for p in INTEGRANTES:
+        vacaciones_p = {int(v) for v in (vacaciones_dict.get(p, []) or []) if str(v).strip().isdigit()}
         for d in dias:
             ds = str(d)
             wd = datetime.date(ano, mes, d).weekday()
-
-            if d in vacaciones_dict.get(p, []):
-                df_res.at[p, ds] = 'V'
-
+            if d in vacaciones_p:
+                df.at[p, ds] = "V"
             elif d == 1 and hist_noche.get(p, False):
-                df_res.at[p, ds] = 'P'
-
-            elif d > 1 and df_res.at[p, str(d - 1)] == 'N':
-                df_res.at[p, ds] = 'P'
-
+                df.at[p, ds] = "P"
+            elif d > 1 and asignaciones[p, d - 1] == "N":
+                df.at[p, ds] = "P"
+            elif asignaciones[p, d]:
+                df.at[p, ds] = asignaciones[p, d]
             else:
-                asignado = False
+                req = _obtener_solicitud(sugerencias_dict, p, d)
+                if wd in set(config_dict.get(p, []) or []) or req == "L":
+                    df.at[p, ds] = "L"
+                elif (p == "JUAN CAMILO PEREZ" and wd in (1, 3)) or (
+                    p in ("ERNESTO MUSKUS", "IVETTE VALENCIA") and wd == 5
+                ) or (p == "IVETTE VALENCIA" and wd == 0) or (
+                    p == "GINELAP" and wd in (3, 4)
+                ) or (p in ("GERLIS DOMINGUEZ", "ZARIANA REYES") and wd == 0):
+                    df.at[p, ds] = "L"
+                else:
+                    df.at[p, ds] = "D"
 
-                for t in turnos_asig:
-                    val = value(x[p][d][t])
+    # Reporte explícito de solicitudes no satisfechas.
+    incumplimientos = []
+    for (p, d), y in incumple.items():
+        if (value(y) or 0) > 0.5:
+            req = _obtener_solicitud(sugerencias_dict, p, d)
+            asignado = asignaciones[p, d]
+            if d in {int(v) for v in (vacaciones_dict.get(p, []) or []) if str(v).strip().isdigit()}:
+                motivo = "Coincide con vacaciones obligatorias"
+            elif req == "L" and asignado:
+                motivo = f"Se necesitó cubrir un turno ({asignado})"
+            elif req in {"C", "N"} and asignado and asignado != req:
+                motivo = f"Se asignó {asignado} en lugar de {req}"
+            elif req in {"C", "N"} and not asignado:
+                motivo = "No fue posible asignar el turno solicitado sin romper reglas obligatorias"
+            else:
+                motivo = "Conflicto con cobertura u otras solicitudes de mayor prioridad"
+            incumplimientos.append({
+                "Prioridad": prioridad_persona[p],
+                "Integrante": p,
+                "Día": d,
+                "Solicitud": req,
+                "Asignación": asignado or df.at[p, str(d)],
+                "Motivo": motivo,
+            })
+    incumplimientos.sort(key=lambda r: (r["Prioridad"], r["Día"], r["Integrante"]))
 
-                    if val is not None and val > 0.5:
-                        df_res.at[p, ds] = t
-                        asignado = True
-                        break
+    df["TOTAL CORRIDOS"] = [sum(asignaciones[p, d] == "C" for d in dias) for p in INTEGRANTES]
+    df["TOTAL NOCHES"] = [sum(asignaciones[p, d] == "N" for d in dias) for p in INTEGRANTES]
+    df["TOTAL TURNOS"] = df["TOTAL CORRIDOS"] + df["TOTAL NOCHES"]
+    df["FINES DE SEMANA"] = [
+        sum(
+            asignaciones[p, d] in turnos
+            and (datetime.date(ano, mes, d).weekday() >= 5 or es_festivo_co(d, mes, ano))
+            for d in dias
+        )
+        for p in INTEGRANTES
+    ]
 
-                if not asignado:
-                    req = sugerencias_dict.get(
-                        p, {}
-                    ).get(ds, "")
-
-                    es_comodin = (
-                        (p == "JUAN CAMILO PEREZ" and wd in [1, 3])
-                        or (p == "ERNESTO MUSKUS" and wd == 5)
-                        or (p == "IVETTE VALENCIA" and wd == 5)
-                    )
-
-                    es_intocable = (
-                        (p == "IVETTE VALENCIA" and wd == 0)
-                        or (p == "GINELAP" and wd in [3, 4])
-                    )
-
-                    es_lunes_gz = (
-                        p in ["GERLIS DOMINGUEZ", "ZARIANA REYES"]
-                        and wd == 0
-                    )
-
-                    if wd in config_dict.get(p, []):
-                        df_res.at[p, ds] = 'L'
-
-                    elif req == 'L':
-                        df_res.at[p, ds] = 'L'
-
-                    elif es_comodin or es_intocable or es_lunes_gz:
-                        df_res.at[p, ds] = 'L'
-
-                    else:
-                        df_res.at[p, ds] = 'D'
-
-    # 7. Totales originales
-    df_res['TOTAL CORRIDOS'] = df_res.apply(
-        lambda r: sum(
-            1 for c in df_res.columns
-            if 'C' in str(r[c]) and c.isdigit()
-        ),
-        axis=1
-    )
-
-    df_res['TOTAL NOCHES'] = df_res.apply(
-        lambda r: sum(
-            1 for c in df_res.columns
-            if 'N' in str(r[c]) and c.isdigit()
-        ),
-        axis=1
-    )
-
-    df_res['TOTAL TURNOS'] = (
-        df_res['TOTAL CORRIDOS'] + df_res['TOTAL NOCHES']
-    )
-
-    df_res['FINES DE SEMANA'] = df_res.apply(
-        lambda r: sum(
-            1 for d in range(1, dias_mes + 1)
-            if (
-                datetime.date(ano, mes, d).weekday() >= 5
-                or es_festivo_co(d, mes, ano)
-            )
-            and any(
-                t in str(r[str(d)]) for t in ['C', 'N']
-            )
-        ),
-        axis=1
-    )
-
-    return df_res
+    patrones = [
+        {"Integrante": p, "Día primera noche": d, "Día segunda noche": d + 2}
+        for p in INTEGRANTES
+        for d in range(1, dias_mes - 1)
+        if asignaciones[p, d] == "N" and asignaciones[p, d + 2] == "N"
+    ]
+    df.attrs["incumplimientos"] = incumplimientos
+    df.attrs["patrones_n_p_n_p"] = patrones
+    df.attrs["diagnostico"] = {
+        "estado": estado,
+        "solicitudes_incumplidas": len(incumplimientos),
+        "patrones_n_p_n_p": len(patrones),
+    }
+    return df
