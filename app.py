@@ -22,7 +22,7 @@ INTEGRANTES = [
 
 LINK_SHEETS_DEFECTO = (
     "https://docs.google.com/spreadsheets/d/"
-    "1PZwvv0XQtSEDfC5GO6OLG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=0#gid=0"
+    "1PZwvv0XQtSEDfC5GO6OLG7Fn8HqJNQUBZ1RNSRgBsss/edit?gid=0#gid=0"
 )
 
 DIAS_MAP_TEXTO = {
@@ -425,9 +425,10 @@ st.caption("Generación y validación de turnos mediante optimización PuLP.")
 
 # El acceso a la hoja habitual queda siempre visible; no hay que copiar su URL.
 st.link_button(
-    "📄 Abrir hoja de configuración en Google Sheets",
-    LINK_SHEETS_DEFECTO,
+    "📄 Abrir hoja de sugerencias en Google Sheets",
+    url=LINK_SHEETS_DEFECTO,
     type="secondary",
+    help="Abre directamente la pestaña de sugerencias (gid=0) en Google Sheets.",
 )
 st.caption(
     "Desde esa hoja puedes consultar o actualizar nombres, solicitudes, días fijos, vacaciones y prioridades. "
