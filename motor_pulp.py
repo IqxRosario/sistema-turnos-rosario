@@ -1,7 +1,7 @@
 import calendar
 import datetime
 import pandas as pd
-from pulp import LpProblem, LpMaximize, LpVariable, LpBinary, lpSum, value, PULP_CBC_CMD
+from pulp import LpProblem, LpMaximize, LpVariable, LpBinary, lpSum, value
 
 INTEGRANTES = [
     "GERLIS DOMINGUEZ", "ANGIE BERNAL", "JHON RIOS", "MARCELA CASTRO",
@@ -129,12 +129,8 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
     for p in ["GERLIS DOMINGUEZ", "ZARIANA REYES"]:
         prob += lpSum([x[p][d][t] for d in lunes_del_mes for t in turnos_asig]) <= 2
 
-    # 5. Resolver
-    try:
-        solver = PULP_CBC_CMD(msg=False)
-        prob.solve(solver)
-    except Exception:
-        prob.solve()
+    # 5. Resolver de forma automática
+    prob.solve()
     
     # 6. Mapeo a DataFrame de salida
     df_res = pd.DataFrame(index=INTEGRANTES, columns=[str(d) for d in dias]).fillna("")
@@ -187,3 +183,5 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
     )
     
     return df_res
+
+Guarda los cambios en GitHub y vuelve a tu pestaña de la aplicación. ¡Streamlit recargará el código al instante y podrás correr tu prueba oficial!
