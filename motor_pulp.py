@@ -29,7 +29,7 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
     # 1. Crear problema de optimización
     prob = LpProblem("Optimizacion_Turnos_Hospital", LpMaximize)
     
-    # Declaración de variables binarias estándar
+    # Declaración de variables binarias con parámetros explícitos (A prueba de errores)
     x = {}
     for p in INTEGRANTES:
         x[p] = {}
@@ -37,7 +37,7 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
         for d in dias:
             x[p][d] = {}
             for t in turnos_asig:
-                x[p][d][t] = LpVariable(f"x_{p_clean}_{d}_{t}", cat='Binary')
+                x[p][d][t] = LpVariable(name=f"x_{p_clean}_{d}_{t}", lowBound=0, upBound=1, cat=LpBinary)
     
     # 2. Matriz de Pesos/Preferencias por Orden de Llegada
     pesos = {}
