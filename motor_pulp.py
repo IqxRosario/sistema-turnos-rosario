@@ -181,6 +181,5 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
                       if (datetime.date(ano, mes, d).weekday() >= 5 or es_festivo_co(d, mes, ano)) 
                       and any(t in str(r[str(d)]) for t in ['C', 'N'])), axis=1
     )
+    
     return df_res
-
-Guarda los cambios en GitHub y vuelve a tu pestaña de la aplicación. ¡Streamlit recargará el código al instante y podrás correr tu prueba oficial!
