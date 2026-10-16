@@ -37,7 +37,7 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
         for d in dias:
             x[p][d] = {}
             for t in turnos_asig:
-                x[p][d][t] = LpVariable(name=f"x_{p_clean}_{d}_{t}", lowBound=0, upBound=1, cat=LpBinary)
+                x[p][d][t] = LpVariable(f"x_{p_clean}_{d}_{t}", lowBound=0, upBound=1, cat=LpBinary)
     
     # 2. Matriz de Pesos/Preferencias por Orden de Llegada
     pesos = {}
