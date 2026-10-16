@@ -22,7 +22,7 @@ INTEGRANTES = [
 
 LINK_SHEETS_DEFECTO = (
     "https://docs.google.com/spreadsheets/d/"
-    "1PZwvv0XQtSEDfC5GO6OLG7Fn8HqJNQUBZ1RNSRgBsss/edit?gid=0#gid=0"
+    "1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?gid=0#gid=0"
 )
 
 DIAS_MAP_TEXTO = {
