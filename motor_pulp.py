@@ -11,9 +11,12 @@ INTEGRANTES = [
 ]
 
 def es_festivo_co(dia, mes, ano):
-    import holidays
-    co_holidays = holidays.CO(years=ano)
-    return datetime.date(ano, mes, dia) in co_holidays
+    try:
+        import holidays
+        co_holidays = holidays.CO(years=ano)
+        return datetime.date(ano, mes, dia) in co_holidays
+    except Exception:
+        return False
 
 def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, config_dict, vacaciones_dict, prioridades_dict=None):
     if prioridades_dict is None:
@@ -26,15 +29,24 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
     # 1. Crear problema de optimización
     prob = pulp.LpProblem("Optimizacion_Turnos_Hospital", pulp.LpMaximize)
     
-    # Variables binarias
-    x = pulp.LpVariable.dicts("x", (INTEGRANTES, dias, turnos_asig), cat=pulp.LpBinary)
+    # Diccionario explícito de variables binarias (evita errores de sintaxis y espacios)
+    x = {
+        p: {
+            d: {
+                t: pulp.LpVariable(f"x_{p.replace(' ', '_')}_{d}_{t}", cat='Binary')
+                for t in turnos_asig
+            }
+            for d in dias
+        }
+        for p in INTEGRANTES
+    }
     
     # 2. Matriz de Pesos/Preferencias (Escalonadas por Orden de Llegada)
     pesos = {}
     for p in INTEGRANTES:
         orden = prioridades_dict.get(p, 99)
         
-        # Ponderación dinámica según número de llegada (Orden 1 = 990 pts, Orden 2 = 980 pts...)
+        # Ponderación dinámica según número de llegada
         puntos_peticion_turno = max(100, 1000 - (orden * 10))
         penalizacion_peticion_libre = min(-300, -1000 + (orden * 10))
         
@@ -126,9 +138,12 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
     for p in ["GERLIS DOMINGUEZ", "ZARIANA REYES"]:
         prob += pulp.lpSum([x[p][d][t] for d in lunes_del_mes for t in turnos_asig]) <= 2
 
-    # 5. Resolver
-    solver = pulp.PULP_CBC_CMD(msg=False)
-    prob.solve(solver)
+    # 5. Resolver con manejo seguro de solver
+    try:
+        solver = pulp.PULP_CBC_CMD(msg=False)
+        prob.solve(solver)
+    except Exception:
+        prob.solve()
     
     # 6. Mapeo a DataFrame
     df_res = pd.DataFrame(index=INTEGRANTES, columns=[str(d) for d in dias]).fillna("")
@@ -147,7 +162,8 @@ def generar_cuadro_pulp(mes, ano, hist_noche, hist_racha, sugerencias_dict, conf
             else:
                 asignado = False
                 for t in turnos_asig:
-                    if pulp.value(x[p][d][t]) and pulp.value(x[p][d][t]) > 0.5:
+                    val = pulp.value(x[p][d][t])
+                    if val is not None and val > 0.5:
                         df_res.at[p, ds] = t
                         asignado = True
                         break
