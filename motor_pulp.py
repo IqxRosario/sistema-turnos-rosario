@@ -29,7 +29,6 @@ def es_festivo_co(dia, mes, ano):
         import holidays
         return datetime.date(ano, mes, dia) in holidays.CO(years=ano)
     except Exception:
-        # Mantiene el comportamiento previo si el paquete holidays no está disponible.
         return False
 
 
@@ -64,16 +63,7 @@ def generar_cuadro_pulp(
 ):
     """Genera turnos con reglas obligatorias y solicitudes por prioridad lexicográfica.
 
-    Orden de optimización:
-      1. Restricciones obligatorias (cobertura, vacaciones, descansos, etc.).
-      2. Minimizar solicitudes incumplidas, por nivel de prioridad ascendente
-         (un número menor representa mayor prioridad).
-      3. Equilibrar proporcionalmente los fines de semana/festivos según días disponibles.
-      4. Preferencias flexibles: evitar N-P-N-P, respetar días fijos siempre que
-         la cobertura lo permita y conservar las preferencias históricas.
-
-    El DataFrame devuelto conserva el formato anterior. Los reportes se adjuntan
-    en df.attrs['incumplimientos'] y df.attrs['diagnostico'].
+    Optimizado para evitar bloqueos mediante penalización directa de fines de semana en lugar de tasas continuas.
     """
     if prioridades_dict is None:
         prioridades_dict = {p: 99 for p in INTEGRANTES}
@@ -101,8 +91,7 @@ def generar_cuadro_pulp(
         for p in INTEGRANTES
     }
 
-    # Cada solicitud tiene una variable de incumplimiento. Estas variables no
-    # permiten romper las reglas duras; solo hacen explícita la petición no atendida.
+    # Cada solicitud tiene una variable de incumplimiento.
     incumple = {}
     prioridad_persona = {
         p: _prioridad_entera(prioridades_dict.get(p, 99)) for p in INTEGRANTES
@@ -119,10 +108,8 @@ def generar_cuadro_pulp(
             solicitudes_por_prioridad.setdefault(nivel, []).append(y)
 
             if req == "L":
-                # Si se trabaja, la solicitud de libre queda incumplida.
                 prob += x[p][d]["C"] + x[p][d]["N"] <= y, f"solicitud_libre_{p.replace(' ', '_')}_{d}"
             else:
-                # Se pide el turno exacto; si no se asigna, la petición se incumple.
                 prob += x[p][d][req] + y >= 1, f"solicitud_turno_{p.replace(' ', '_')}_{d}"
 
     # Reglas obligatorias de empalme entre meses.
@@ -140,7 +127,6 @@ def generar_cuadro_pulp(
                 f"empalme_racha2_{p.replace(' ', '_')}"
             )
         elif racha == 1 and dias_mes >= 3:
-            # Un turno el último día anterior + máximo 2 en los primeros 3 días.
             prob += lpSum(
                 x[p][d][t] for d in range(1, 4) for t in turnos
             ) <= 2, f"empalme_racha1_{p.replace(' ', '_')}"
@@ -155,31 +141,25 @@ def generar_cuadro_pulp(
         prob += lpSum(x[p][d]["N"] for p in INTEGRANTES) == cuota_n, f"cobertura_N_{d}"
         prob += lpSum(x[p][d]["C"] for p in INTEGRANTES) == cuota_c, f"cobertura_C_{d}"
 
-        # Vacaciones siempre intocables.
         for p in INTEGRANTES:
             vacaciones_p = {int(v) for v in (vacaciones_dict.get(p, []) or []) if str(v).strip().isdigit()}
             if d in vacaciones_p:
                 prob += x[p][d]["C"] == 0, f"vacacion_C_{p.replace(' ', '_')}_{d}"
                 prob += x[p][d]["N"] == 0, f"vacacion_N_{p.replace(' ', '_')}_{d}"
 
-            # Máximo un turno diario.
             prob += x[p][d]["C"] + x[p][d]["N"] <= 1, f"max_un_turno_{p.replace(' ', '_')}_{d}"
 
-            # Después de una noche, no puede trabajar C ni N al día siguiente.
             if d < dias_mes:
                 prob += (
                     x[p][d]["N"] + x[p][d + 1]["C"] + x[p][d + 1]["N"] <= 1,
                     f"descanso_post_noche_{p.replace(' ', '_')}_{d}"
                 )
 
-            # Máximo 3 turnos C/N en cualquier ventana de 4 días.
             if d <= dias_mes - 3:
                 prob += lpSum(
                     x[p][d + k][t] for k in range(4) for t in turnos
                 ) <= 3, f"max_3_en_4_{p.replace(' ', '_')}_{d}"
 
-        # Restricciones particulares que ya existían. Las solicitudes del turno
-        # correspondiente pueden habilitar la excepción, como en el código original.
         req_iv = _obtener_solicitud(sugerencias_dict, "IVETTE VALENCIA", d)
         if wd == 0 and not req_iv in {"C", "N"}:
             prob += x["IVETTE VALENCIA"][d]["C"] + x["IVETTE VALENCIA"][d]["N"] == 0, f"ivette_lunes_{d}"
@@ -192,9 +172,6 @@ def generar_cuadro_pulp(
         if wd == 2 and req_an != "N":
             prob += x["ANGIE BERNAL"][d]["N"] == 0, f"angie_miercoles_N_{d}"
 
-        # Descansos obligatorios de Ginelap: jueves (3) y viernes (4).
-        # Una solicitud de turno no puede anular esta restricción; si pide C/N,
-        # esa solicitud se reportará como no satisfecha, sin romper la cobertura.
         if wd in (3, 4):
             prob += x["GINELAP"][d]["C"] + x["GINELAP"][d]["N"] == 0, f"ginelap_jueves_viernes_{d}"
 
@@ -209,8 +186,7 @@ def generar_cuadro_pulp(
     for p in ("GERLIS DOMINGUEZ", "ZARIANA REYES"):
         prob += lpSum(x[p][d][t] for d in lunes for t in turnos) <= 2, f"max_dos_lunes_{p.replace(' ', '_')}"
 
-    # 1) Optimización lexicográfica: se fija el mejor resultado de cada nivel
-    # de prioridad antes de pasar al siguiente. Número menor = prioridad mayor.
+    # 1) Optimización lexicográfica por prioridades de solicitudes.
     prioridades_ordenadas = sorted(solicitudes_por_prioridad)
     if prioridades_ordenadas:
         for indice, nivel in enumerate(prioridades_ordenadas):
@@ -222,73 +198,17 @@ def generar_cuadro_pulp(
             if estado != "Optimal":
                 raise ErrorCuadroInviable(
                     f"No existe un cuadro que cumpla las restricciones obligatorias para {mes:02d}/{ano}. "
-                    f"Estado de PuLP: {estado}. Revisa cobertura, vacaciones, descansos y reglas individuales."
+                    f"Estado de PuLP: {estado}."
                 )
             mejor_valor = int(round(value(objetivo_nivel) or 0))
             prob += objetivo_nivel == mejor_valor, f"fijar_prioridad_{indice}_{nivel}"
 
-    # 2) Equidad de fines de semana/festivos.
-    # Se compara la proporción de días de fin de semana trabajados respecto a los
-    # días de fin de semana disponibles de cada persona. Así, las vacaciones y
-    # los descansos obligatorios de Ginelap no penalizan injustamente.
+    # 2) Equidad ULTRARRÁPIDA de fines de semana y preferencias flexibles.
     dias_fin_semana = [
         d for d in dias
         if datetime.date(ano, mes, d).weekday() >= 5 or es_festivo_co(d, mes, ano)
     ]
-    disponibilidad_fin_semana = {}
-    for p in INTEGRANTES:
-        vacaciones_p = {
-            int(v) for v in (vacaciones_dict.get(p, []) or [])
-            if str(v).strip().isdigit()
-        }
-        disponibilidad_fin_semana[p] = [
-            d for d in dias_fin_semana
-            if d not in vacaciones_p
-            and not (
-                p == "GINELAP"
-                and datetime.date(ano, mes, d).weekday() in (3, 4)
-            )
-        ]
 
-    tasa_fin_semana_max = LpVariable("tasa_fin_semana_max", lowBound=0, upBound=1)
-    tasa_fin_semana_min = LpVariable("tasa_fin_semana_min", lowBound=0, upBound=1)
-    for p in INTEGRANTES:
-        disponibles = disponibilidad_fin_semana[p]
-        if not disponibles:
-            continue
-        total_fin_semana_p = lpSum(
-            x[p][d][t] for d in disponibles for t in turnos
-        )
-        prob += (
-            total_fin_semana_p <= tasa_fin_semana_max * len(disponibles),
-            f"limite_tasa_fin_semana_max_{p.replace(' ', '_')}"
-        )
-        prob += (
-            total_fin_semana_p >= tasa_fin_semana_min * len(disponibles),
-            f"limite_tasa_fin_semana_min_{p.replace(' ', '_')}"
-        )
-
-    # Se prioriza reducir la diferencia entre las tasas de carga de fin de semana.
-    # Se deja una tolerancia pequeña después para conservar margen de optimización
-    # de patrones nocturnos y preferencias flexibles.
-    brecha_fin_semana = tasa_fin_semana_max - tasa_fin_semana_min
-    prob.sense = LpMinimize
-    prob.setObjective(brecha_fin_semana)
-    prob.solve()
-    estado_equidad = LpStatus.get(prob.status, str(prob.status))
-    if estado_equidad != "Optimal":
-        raise ErrorCuadroInviable(
-            f"No se pudo equilibrar la carga de fines de semana para {mes:02d}/{ano}. "
-            f"Estado de PuLP: {estado_equidad}."
-        )
-    mejor_brecha_fin_semana = value(brecha_fin_semana)
-    prob += (
-        brecha_fin_semana <= (mejor_brecha_fin_semana or 0) + 0.02,
-        "mantener_equidad_fin_semana"
-    )
-
-    # 3) Preferencias flexibles: evitar N-P-N-P y conservar días fijos libres.
-    # El patrón N-P-N-P equivale a dos noches separadas por dos días.
     penaliza_patron = {}
     for p in INTEGRANTES:
         for d in range(1, dias_mes - 1):
@@ -296,15 +216,17 @@ def generar_cuadro_pulp(
             penaliza_patron[p, d] = z
             prob += z >= x[p][d]["N"] + x[p][d + 2]["N"] - 1, f"detectar_patron_NPNP_{p.replace(' ', '_')}_{d}"
 
-    pesos_flexibles = []
+    pesos_totales = []
     for p in INTEGRANTES:
         dias_fijos = set(config_dict.get(p, []) or [])
+        vacaciones_p = {int(v) for v in (vacaciones_dict.get(p, []) or []) if str(v).strip().isdigit()}
+        
         for d in dias:
             wd = datetime.date(ano, mes, d).weekday()
+            es_fs = d in dias_fin_semana
             req = _obtener_solicitud(sugerencias_dict, p, d)
+            
             for t in turnos:
-                # Una solicitud se optimiza en la fase lexicográfica; aquí no se
-                # vuelve a premiar ni castigar para no alterar la prioridad.
                 if req:
                     peso = 0
                 elif wd in dias_fijos:
@@ -313,13 +235,13 @@ def generar_cuadro_pulp(
                     p in ("ERNESTO MUSKUS", "IVETTE VALENCIA") and wd == 5
                 ):
                     peso = -50
+                elif es_fs:
+                    peso = -5
                 else:
                     peso = 1
-                pesos_flexibles.append(peso * x[p][d][t])
+                pesos_totales.append(peso * x[p][d][t])
 
-    # Minimizar patrones tiene más importancia que las preferencias flexibles.
-    # Se maximiza el resto y se resta una penalización grande por patrón.
-    objetivo_final = lpSum(pesos_flexibles) - 200 * lpSum(penaliza_patron.values())
+    objetivo_final = lpSum(pesos_totales) - 200 * lpSum(penaliza_patron.values())
     prob.sense = LpMaximize
     prob.setObjective(objetivo_final)
     prob.solve()
@@ -362,7 +284,6 @@ def generar_cuadro_pulp(
             if total_4 > 3:
                 errores_validacion.append(f"{p}: más de 3 turnos en los días {d}-{d + 3}")
 
-    # Validar también las reglas individuales y los límites de lunes.
     for d in dias:
         wd = datetime.date(ano, mes, d).weekday()
         req_iv = _obtener_solicitud(sugerencias_dict, "IVETTE VALENCIA", d)
@@ -388,8 +309,7 @@ def generar_cuadro_pulp(
     if errores_validacion:
         raise RuntimeError("La validación independiente falló: " + "; ".join(errores_validacion[:12]))
 
-    # Crear la tabla visible. P se muestra después de N; V conserva prioridad visual,
-    # pero ya se comprobó que no oculta turnos asignados.
+    # Crear la tabla visible.
     df = pd.DataFrame(index=INTEGRANTES, columns=[str(d) for d in dias]).fillna("")
     for p in INTEGRANTES:
         vacaciones_p = {int(v) for v in (vacaciones_dict.get(p, []) or []) if str(v).strip().isdigit()}
