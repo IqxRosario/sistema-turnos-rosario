@@ -68,7 +68,8 @@ def generar_cuadro_pulp(
       1. Restricciones obligatorias (cobertura, vacaciones, descansos, etc.).
       2. Minimizar solicitudes incumplidas, por nivel de prioridad ascendente
          (un número menor representa mayor prioridad).
-      3. Preferencias flexibles: evitar N-P-N-P, respetar días fijos siempre que
+      3. Equilibrar proporcionalmente los fines de semana/festivos según días disponibles.
+      4. Preferencias flexibles: evitar N-P-N-P, respetar días fijos siempre que
          la cobertura lo permita y conservar las preferencias históricas.
 
     El DataFrame devuelto conserva el formato anterior. Los reportes se adjuntan
@@ -191,8 +192,10 @@ def generar_cuadro_pulp(
         if wd == 2 and req_an != "N":
             prob += x["ANGIE BERNAL"][d]["N"] == 0, f"angie_miercoles_N_{d}"
 
-        req_gi = _obtener_solicitud(sugerencias_dict, "GINELAP", d)
-        if wd in (3, 4) and req_gi not in {"C", "N"}:
+        # Descansos obligatorios de Ginelap: jueves (3) y viernes (4).
+        # Una solicitud de turno no puede anular esta restricción; si pide C/N,
+        # esa solicitud se reportará como no satisfecha, sin romper la cobertura.
+        if wd in (3, 4):
             prob += x["GINELAP"][d]["C"] + x["GINELAP"][d]["N"] == 0, f"ginelap_jueves_viernes_{d}"
 
     # Entre 4 y 5 noches por integrante al mes.
@@ -224,7 +227,67 @@ def generar_cuadro_pulp(
             mejor_valor = int(round(value(objetivo_nivel) or 0))
             prob += objetivo_nivel == mejor_valor, f"fijar_prioridad_{indice}_{nivel}"
 
-    # 2) Preferencias flexibles: evitar N-P-N-P y conservar días fijos libres.
+    # 2) Equidad de fines de semana/festivos.
+    # Se compara la proporción de días de fin de semana trabajados respecto a los
+    # días de fin de semana disponibles de cada persona. Así, las vacaciones y
+    # los descansos obligatorios de Ginelap no penalizan injustamente.
+    dias_fin_semana = [
+        d for d in dias
+        if datetime.date(ano, mes, d).weekday() >= 5 or es_festivo_co(d, mes, ano)
+    ]
+    disponibilidad_fin_semana = {}
+    for p in INTEGRANTES:
+        vacaciones_p = {
+            int(v) for v in (vacaciones_dict.get(p, []) or [])
+            if str(v).strip().isdigit()
+        }
+        disponibilidad_fin_semana[p] = [
+            d for d in dias_fin_semana
+            if d not in vacaciones_p
+            and not (
+                p == "GINELAP"
+                and datetime.date(ano, mes, d).weekday() in (3, 4)
+            )
+        ]
+
+    tasa_fin_semana_max = LpVariable("tasa_fin_semana_max", lowBound=0, upBound=1)
+    tasa_fin_semana_min = LpVariable("tasa_fin_semana_min", lowBound=0, upBound=1)
+    for p in INTEGRANTES:
+        disponibles = disponibilidad_fin_semana[p]
+        if not disponibles:
+            continue
+        total_fin_semana_p = lpSum(
+            x[p][d][t] for d in disponibles for t in turnos
+        )
+        prob += (
+            total_fin_semana_p <= tasa_fin_semana_max * len(disponibles),
+            f"limite_tasa_fin_semana_max_{p.replace(' ', '_')}"
+        )
+        prob += (
+            total_fin_semana_p >= tasa_fin_semana_min * len(disponibles),
+            f"limite_tasa_fin_semana_min_{p.replace(' ', '_')}"
+        )
+
+    # Se prioriza reducir la diferencia entre las tasas de carga de fin de semana.
+    # Se deja una tolerancia pequeña después para conservar margen de optimización
+    # de patrones nocturnos y preferencias flexibles.
+    brecha_fin_semana = tasa_fin_semana_max - tasa_fin_semana_min
+    prob.sense = LpMinimize
+    prob.setObjective(brecha_fin_semana)
+    prob.solve()
+    estado_equidad = LpStatus.get(prob.status, str(prob.status))
+    if estado_equidad != "Optimal":
+        raise ErrorCuadroInviable(
+            f"No se pudo equilibrar la carga de fines de semana para {mes:02d}/{ano}. "
+            f"Estado de PuLP: {estado_equidad}."
+        )
+    mejor_brecha_fin_semana = value(brecha_fin_semana)
+    prob += (
+        brecha_fin_semana <= (mejor_brecha_fin_semana or 0) + 0.02,
+        "mantener_equidad_fin_semana"
+    )
+
+    # 3) Preferencias flexibles: evitar N-P-N-P y conservar días fijos libres.
     # El patrón N-P-N-P equivale a dos noches separadas por dos días.
     penaliza_patron = {}
     for p in INTEGRANTES:
@@ -311,9 +374,8 @@ def generar_cuadro_pulp(
         req_an = _obtener_solicitud(sugerencias_dict, "ANGIE BERNAL", d)
         if wd == 2 and req_an != "N" and asignaciones["ANGIE BERNAL", d] == "N":
             errores_validacion.append(f"Angie: N prohibida el miércoles {d}")
-        req_gi = _obtener_solicitud(sugerencias_dict, "GINELAP", d)
-        if wd in (3, 4) and req_gi not in {"C", "N"} and asignaciones["GINELAP", d]:
-            errores_validacion.append(f"Ginelap: turno prohibido el día {d}")
+        if wd in (3, 4) and asignaciones["GINELAP", d]:
+            errores_validacion.append(f"Ginelap: turno prohibido el día {d} (jueves/viernes obligatorios libres)")
 
     for p in ("GERLIS DOMINGUEZ", "ZARIANA REYES"):
         lunes_trabajados = sum(
