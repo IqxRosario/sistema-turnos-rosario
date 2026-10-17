@@ -323,13 +323,26 @@ def mostrar_reportes_pulp(df_res):
 
 
 def crear_excel(df_res, mes, ano):
-    """Exporta el cuadro y los reportes del optimizador en hojas separadas."""
+    """Exporta el cuadro y los reportes del optimizador en hojas separadas con colores en Excel."""
     salida = io.BytesIO()
     incumplimientos = df_res.attrs.get("incumplimientos", [])
     patrones = df_res.attrs.get("patrones_n_p_n_p", [])
     diagnostico = df_res.attrs.get("diagnostico", {})
 
     df_turnos = df_res.copy()
+    
+    # Mapeo de colores en formato hexadecimal (sin el # para openpyxl)
+    colores_excel = {
+        "C": "F4D35E",  # Amarillo
+        "N": "5DADE2",  # Celeste
+        "P": "F5B7B1",  # Rosado (Post-turno)
+        "D": "D5D8DC",  # Gris (Descanso)
+        "V": "BB8FCE",  # Morado (Vacaciones)
+        "L": "82E0AA",  # Verde (Libre)
+    }
+
+    from openpyxl.styles import PatternFill, Alignment, Font
+
     with pd.ExcelWriter(salida, engine="openpyxl") as writer:
         df_turnos.to_excel(writer, sheet_name="Turnos")
         pd.DataFrame([diagnostico or {"estado": "sin datos"}]).to_excel(
@@ -343,6 +356,21 @@ def crear_excel(df_res, mes, ano):
             pd.DataFrame(patrones).to_excel(
                 writer, sheet_name="Patrones N-P-N-P", index=False
             )
+
+        # Aplicar colores y formato a la hoja de Turnos
+        workbook = writer.book
+        worksheet = workbook["Turnos"]
+        
+        align_center = Alignment(horizontal="center", vertical="center")
+        font_dark = Font(color="202020", name="Calibri", size=11)
+
+        for row in worksheet.iter_rows(min_row=2, min_col=2, max_row=worksheet.max_row, max_col=worksheet.max_column):
+            for cell in row:
+                cell.alignment = align_center
+                cell.font = font_dark
+                val = str(cell.value).strip().upper()
+                if val in colores_excel:
+                    cell.fill = PatternFill(start_color=colores_excel[val], end_color=colores_excel[val], fill_type="solid")
 
     salida.seek(0)
     return salida.getvalue(), f"Turnos_{mes:02d}_{ano}.xlsx"
