@@ -1,148 +1,220 @@
 import streamlit as st
+import calendar
+import datetime
 import pandas as pd
 import io
-import calendar
-import openpyxl
-from openpyxl.styles import PatternFill, Alignment, Font, Border, Side
-from motor_pulp import resolver_turnos
+import re
+from motor_pulp import generar_cuadro_pulp
 
-st.set_page_config(
-    page_title="Gestor de Turnos Hospitalarios",
-    layout="wide",
-    page_icon="🏥"
-)
+INTEGRANTES = [
+    "GERLIS DOMINGUEZ", "ANGIE BERNAL", "JHON RIOS", "MARCELA CASTRO",
+    "ZARIANA REYES", "IVETTE VALENCIA", "GINELAP", "ANA ESCOBAR",
+    "JUAN CAMILO PEREZ", "ERNESTO MUSKUS", "RANCES ARGUMEDO", 
+    "KELLY CAUSIL", "JOAN CARMONA"
+]
 
-st.title("🏥 Sistema de Optimización y Empalme de Turnos Médicos")
+LINK_SHEETS_DEFECTO = "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=0#gid=0"
 
-def crear_excel(df_res, mes=11, ano=2026):
-    salida = io.BytesIO()
+DIAS_MAP_TEXTO = {
+    'LUNES': 0, 'MARTES': 1, 'MIERCOLES': 2, 'JUEVES': 3, 'VIERNES': 4, 'SABADO': 5, 'DOMINGO': 6,
+    'LUN': 0, 'MAR': 1, 'MIE': 2, 'JUE': 3, 'VIE': 4, 'SAB': 5, 'DOM': 6
+}
+
+def normalizar_texto(texto):
+    if not isinstance(texto, str):
+        return ""
+    import unicodedata
+    s = unicodedata.normalize('NFD', texto)
+    s = s.encode('ascii', 'ignore').decode("utf-8")
+    return s.strip().upper()
+
+def parsear_rangos_y_dias(texto):
+    dias = []
+    if not texto or str(texto) == 'nan':
+        return dias
+    partes = str(texto).replace(' Y ', ',').replace('&', ',').split(',')
+    for p in partes:
+        p = p.strip()
+        if '-' in p:
+            rng = p.split('-')
+            if len(rng) == 2 and rng[0].isdigit() and rng[1].isdigit():
+                dias.extend(list(range(int(rng[0]), int(rng[1]) + 1)))
+        elif p.isdigit():
+            dias.append(int(p))
+    return list(set(dias))
+
+def procesar_historial_empalme(archivo):
+    hist_noche = {p: False for p in INTEGRANTES}
+    hist_consecutivos = {p: 0 for p in INTEGRANTES}
     
-    dias_espanol = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
-    num_dias = calendar.monthrange(ano, mes)[1]
-    primer_dia_semana, _ = calendar.monthrange(ano, mes)
-    
-    renombrados = {}
-    es_fin_de_semana = {}
-    
-    for d in range(1, num_dias + 1):
-        dia_idx = (primer_dia_semana + d - 1) % 7
-        nombre_dia = dias_espanol[dia_idx]
-        col_name = f"{d} {nombre_dia}"
-        renombrados[d] = col_name
-        es_fin_de_semana[col_name] = (dia_idx in [5, 6])
-
-    df_export = df_res.copy()
-    df_export = df_export.rename(columns=renombrados)
-    
-    colores_turnos = {
-        "C": "F4D35E",  # Amarillo (Corrido)
-        "N": "5DADE2",  # Celeste (Noche)
-        "P": "F5B7B1",  # Rosado (Post-turno)
-        "D": "D5D8DC",  # Gris (Descanso)
-        "V": "BB8FCE",  # Morado (Vacaciones)
-        "L": "82E0AA",  # Verde (Libre)
-    }
-
-    fill_header_norm = PatternFill(start_color="2C3E50", end_color="2C3E50", fill_type="solid")
-    fill_header_weekend = PatternFill(start_color="1B4F72", end_color="1B4F72", fill_type="solid")
-    font_header = Font(color="FFFFFF", bold=True, name="Calibri", size=10)
-    font_dark = Font(color="202020", name="Calibri", size=11)
-    align_center = Alignment(horizontal="center", vertical="center")
-    thin_border = Border(
-        left=Side(style='thin', color='D0D3D4'),
-        right=Side(style='thin', color='D0D3D4'),
-        top=Side(style='thin', color='D0D3D4'),
-        bottom=Side(style='thin', color='D0D3D4')
-    )
-
-    with pd.ExcelWriter(salida, engine="openpyxl") as writer:
-        df_export.to_excel(writer, sheet_name="Turnos", index=False)
-        diagnostico = df_res.attrs.get("diagnostico", {"estado": df_res.attrs.get("status", "OK")})
-        pd.DataFrame([diagnostico]).to_excel(writer, sheet_name="Diagnostico", index=False)
-
-        wb = writer.book
-        ws = wb["Turnos"]
+    if archivo is None:
+        return hist_noche, hist_consecutivos
         
-        for col_idx in range(1, ws.max_column + 1):
-            cell = ws.cell(row=1, column=col_idx)
-            cell.alignment = align_center
-            cell.font = font_header
-            col_val = str(cell.value)
-            
-            if col_val in es_fin_de_semana and es_fin_de_semana[col_val]:
-                cell.fill = fill_header_weekend
-            else:
-                cell.fill = fill_header_norm
+    try:
+        df_prev = pd.read_excel(archivo)
+        df_prev.columns = [str(c).strip() for c in df_prev.columns]
+        
+        col_nom = df_prev.columns[0]
+        cols_dias = sorted([int(c) for c in df_prev.columns if c.isdigit()])
+        
+        if cols_dias:
+            u_dia = str(cols_dias[-1])
+            for _, r in df_prev.iterrows():
+                nom_sheet = normalizar_texto(r[col_nom])
+                nom_real = next((p for p in INTEGRANTES if nom_sheet in p or p in nom_sheet), None)
+                if nom_real:
+                    val_u = str(r[u_dia]).strip().upper()
+                    if 'N' in val_u:
+                        hist_noche[nom_real] = True
+                    
+                    racha = 0
+                    for d in reversed(cols_dias):
+                        val = str(r[str(d)]).strip().upper()
+                        if any(t in val for t in ['C', 'N']):
+                            racha += 1
+                        else:
+                            break
+                    hist_consecutivos[nom_real] = racha
+    except Exception as e:
+        st.warning(f"No se pudo procesar el historial de empalme: {e}")
+        
+    return hist_noche, hist_consecutivos
 
-        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
-            for cell in row:
-                cell.alignment = align_center
-                cell.font = font_dark
-                cell.border = thin_border
-                val = str(cell.value).strip().upper()
+def procesar_configuracion_y_sugerencias(link):
+    libres_fijos = {p: [] for p in INTEGRANTES}
+    vacaciones = {p: [] for p in INTEGRANTES}
+    sugerencias = {p: {} for p in INTEGRANTES}
+    prioridades = {p: 99 for p in INTEGRANTES}
+    
+    if not link or not link.startswith("http"):
+        return libres_fijos, vacaciones, sugerencias, prioridades
+        
+    try:
+        base_url = link.split('/edit')[0]
+        csv_link = f"{base_url}/export?format=csv"
+        match = re.search(r'gid=(\d+)', link)
+        if match:
+            csv_link += f"&gid={match.group(1)}"
+        
+        df = pd.read_csv(csv_link)
+        df.columns = [normalizar_texto(c) for c in df.columns]
+        
+        col_nom = next((c for c in df.columns if 'NOMBRE' in c), None)
+        col_sug = next((c for c in df.columns if 'PETICION' in c or 'LIBRES SOLICITADO' in c or 'SUGERENCIA' in c), None)
+        col_fijo = next((c for c in df.columns if 'FIJO' in c or 'ESTUDIO' in c), None)
+        col_vac = next((c for c in df.columns if 'VACACIO' in c), None)
+        col_prio = next((c for c in df.columns if 'ORDEN' in c or 'PRIORIDAD' in c or 'LLEGADA' in c), None)
+        
+        if col_nom:
+            for _, r in df.iterrows():
+                nom_sheet = normalizar_texto(r[col_nom])
+                nom_real = next((p for p in INTEGRANTES if nom_sheet in p or p in nom_sheet), None)
                 
-                if val in colores_turnos:
-                    cell.fill = PatternFill(start_color=colores_turnos[val], end_color=colores_turnos[val], fill_type="solid")
+                if nom_real:
+                    # 0. Prioridad por Orden de Llegada
+                    if col_prio and str(r[col_prio]).replace('.0', '').isdigit():
+                        prioridades[nom_real] = int(float(r[col_prio]))
 
-    salida.seek(0)
-    return salida.getvalue(), f"Turnos_{mes:02d}_{ano}.xlsx"
+                    # 1. Libres Fijos
+                    if col_fijo and str(r[col_fijo]) != 'nan':
+                        txt_fijo = normalizar_texto(r[col_fijo])
+                        for d_nombre, d_num in DIAS_MAP_TEXTO.items():
+                            if d_nombre in txt_fijo and d_num not in libres_fijos[nom_real]:
+                                libres_fijos[nom_real].append(d_num)
 
-tab1, tab2 = st.tabs(["🚀 Generador de Turnos (Sugerencias)", "🔗 Empalme de Turnos (Mes Anterior)"])
+                    # 2. Vacaciones
+                    if col_vac and str(r[col_vac]) != 'nan':
+                        vacaciones[nom_real] = parsear_rangos_y_dias(r[col_vac])
+
+                    # 3. Sugerencias / Libres del mes
+                    if col_sug and str(r[col_sug]) != 'nan':
+                        txt_sug = str(r[col_sug]).strip()
+                        elementos = txt_sug.replace(' Y ', ',').replace('&', ',').split(',')
+                        for elem in elementos:
+                            elem = elem.strip().upper()
+                            match_turno = re.match(r'(\d+)([NCL])', elem)
+                            if match_turno:
+                                dia_num, t_cod = match_turno.groups()
+                                sugerencias[nom_real][dia_num] = t_cod
+                            else:
+                                dias_lib = parsear_rangos_y_dias(elem)
+                                for d_lib in dias_lib:
+                                    sugerencias[nom_real][str(d_lib)] = 'L'
+                                    
+    except Exception as e:
+        st.error(f"Error procesando plantilla Google Sheets: {e}")
+        
+    return libres_fijos, vacaciones, sugerencias, prioridades
+
+def aplicar_colores(val):
+    v = str(val).strip()
+    if v == 'C': return 'background-color: #d1e7dd; color: #0f5132; font-weight: bold;'
+    if v == 'N': return 'background-color: #cfe2ff; color: #084298; font-weight: bold;'
+    if v == 'P': return 'background-color: #fff3cd; color: #664d03; font-weight: bold;'
+    if v == 'D': return 'background-color: #f8f9fa; color: #212529;'
+    if v == 'V': return 'background-color: #f8d7da; color: #842029; font-weight: bold;'
+    if v == 'L': return 'background-color: #e2e3e5; color: #41464b; font-weight: bold;'
+    return ''
+
+# --- INTERFAZ STREAMLIT ---
+st.title("🏥 Sistema de Gestión de Turnos Rosario")
+
+st.sidebar.header("⚙️ Configuración del Mes")
+mes_sel = st.sidebar.selectbox("Mes", list(range(1, 13)), index=datetime.datetime.now().month - 1)
+ano_sel = st.sidebar.number_input("Año", min_value=2024, max_value=2030, value=datetime.datetime.now().year)
+
+st.sidebar.header("🔗 Conexión a Google Sheets")
+link_config = st.sidebar.text_input("Link Hoja Unificada (Google Sheets)", value=LINK_SHEETS_DEFECTO)
+st.sidebar.link_button("📊 Abrir Hoja en Google Sheets", LINK_SHEETS_DEFECTO, use_container_width=True)
+
+archivo_previo = st.file_uploader("📁 Cargar Excel de empalme mes anterior (Opcional)", type=["xlsx"])
+
+# --- PESTAÑAS DE GENERACIÓN ---
+tab1, tab2 = st.tabs(["⚡ Motor Pro (Optimización PuLP)", "🎲 Motor Clásico (Simulación)"])
 
 with tab1:
-    st.header("Generación de Cuadro de Turnos Mensual")
-    st.write("Carga el archivo de sugerencias para procesar el cuadro del mes actual.")
-    
-    uploaded_file = st.file_uploader("Subir archivo Excel de Sugerencias", type=["xlsx", "xls"], key="file_sugerencias")
-
-    if uploaded_file is not None:
-        try:
-            df_sugerencias = pd.read_excel(uploaded_file)
-            st.success("Plantilla de Sugerencias cargada exitosamente.")
-            st.dataframe(df_sugerencias, use_container_width=True)
+    st.subheader("Optimización Matemática en 1 solo paso")
+    if st.button("🚀 GENERAR CON OPTIMIZACIÓN", type="primary", use_container_width=True, key="btn_pulp"):
+        conf, vacs, sug, prio = procesar_configuracion_y_sugerencias(link_config)
+        hist_noche, hist_racha = procesar_historial_empalme(archivo_previo)
+        
+        with st.spinner('Resolviendo modelo de optimización matemática...'):
+            res = generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vacs, prio)
             
-            col1, col2 = st.columns(2)
-            with col1:
-                mes = st.number_input("Mes de programación", min_value=1, max_value=12, value=11, key="mes_opt")
-            with col2:
-                ano = st.number_input("Año", min_value=2024, max_value=2030, value=2026, key="ano_opt")
-                
-            if st.button("🚀 Generar Cuadro de Turnos", type="primary", key="btn_opt"):
-                with st.spinner("Optimizando asignación con reglas de salud e individualidades..."):
-                    df_res = resolver_turnos(df_sugerencias, mes=mes, ano=ano)
-                    status = df_res.attrs.get('status', 'Desconocido')
-                    
-                    if status in ['Optimal', 'Feasible']:
-                        st.success(f"¡Cuadro generado exitosamente! Estado del optimizador: {status}")
-                        st.dataframe(df_res, use_container_width=True)
-                        
-                        bytes_data, nombre_archivo = crear_excel(df_res, mes=mes, ano=ano)
-                        st.download_button(
-                            label="📥 Descargar Cuadro de Turnos en Excel",
-                            data=bytes_data,
-                            file_name=nombre_archivo,
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key="dl_opt"
-                        )
-                    else:
-                        st.error(f"No se pudo encontrar una solución factible. Estado: {status}")
-        except Exception as e:
-            st.error(f"Error al procesar la planilla de sugerencias: {e}")
+        dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
+        columnas_dias = [str(d) for d in range(1, dias_en_mes + 1)]
+        
+        st.success("✅ ¡Turnos calculados matemáticamente respetando orden de llegada y restricciones!")
+        st.dataframe(res.style.map(aplicar_colores, subset=columnas_dias), use_container_width=True)
+        
+        output = io.BytesIO()
+        res_final_estilo = res.style.map(aplicar_colores, subset=columnas_dias)
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            res_final_estilo.to_excel(writer, sheet_name='Turnos')
+            worksheet = writer.sheets['Turnos']
+            for i, col in enumerate(res.columns):
+                worksheet.set_column(i, i, 10)
+        
+        st.download_button(
+            label="📥 Descargar Excel Optimizado",
+            data=output.getvalue(),
+            file_name=f"Turnos_{mes_sel}_{ano_sel}_PuLP.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
 
 with tab2:
-    st.header("Empalme con Cuadro del Mes Anterior")
-    st.write("Carga el archivo Excel de turnos del mes anterior para verificar y enlazar el último día con el inicio del nuevo mes.")
-    
-    uploaded_empalme = st.file_uploader("Subir archivo Excel de Empalme (Mes Anterior)", type=["xlsx", "xls"], key="file_empalme")
-    
-    if uploaded_empalme is not None:
-        try:
-            df_empalme = pd.read_excel(uploaded_empalme)
-            st.success("Archivo de Empalme cargado correctamente.")
-            st.dataframe(df_empalme.head(15), use_container_width=True)
+    st.subheader("Simulación por N-iteraciones aleatorias")
+    iteraciones = st.slider("Número de simulaciones", 10, 200, 50)
+    if st.button("🚀 GENERAR ESCENARIO SIMULADO", type="secondary", use_container_width=True, key="btn_clasico"):
+        conf, vacs, sug, prio = procesar_configuracion_y_sugerencias(link_config)
+        hist_noche, hist_racha = procesar_historial_empalme(archivo_previo)
+        
+        with st.spinner('Simulando múltiples escenarios...'):
+            res = generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vacs, prio)
             
-            if st.button("🔄 Procesar Empalme", key="btn_empalme"):
-                st.info("Visualizando datos del empalme...")
-                st.success("Empalme verificado. Las noches del último día quedan sincronizadas con los Post-turnos del día 1.")
-        except Exception as e:
-            st.error(f"Error al procesar el archivo de empalme: {e}")
+        dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
+        columnas_dias = [str(d) for d in range(1, dias_en_mes + 1)]
+        
+        st.success("✅ Escenario generado correctamente.")
+        st.dataframe(res.style.map(aplicar_colores, subset=columnas_dias), use_container_width=True)
