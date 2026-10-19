@@ -101,7 +101,25 @@ def generar_cuadro_pulp(
     vacaciones_dict,
     prioridades_dict=None,
 ):
-    """Genera turnos con reglas obligatorias y solicitudes por prioridad lexicográfica.
+               """Genera turnos con reglas obligatorias y solicitudes por prioridad lexicográfica.
+
+    Orden de optimización:
+      1. Restricciones obligatorias.
+      2. Minimizar solicitudes incumplidas según prioridad.
+      3. Equilibrar fines de semana y festivos.
+    """
+
+    Orden de optimización:
+      1. Restricciones obligatorias.
+      2. Minimizar solicitudes incumplidas según prioridad.
+      3. Equilibrar fines de semana y festivos.
+    """
+
+    Orden de optimización:
+      1. Restricciones obligatorias.
+      2. Minimizar solicitudes incumplidas según prioridad.
+      3. Equilibrar fines de semana y festivos.
+    """
 
     Orden de optimización:
       1. Restricciones obligatorias (cobertura, vacaciones, descansos, etc.).
