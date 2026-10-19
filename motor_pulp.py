@@ -8,6 +8,7 @@ from pulp import (
     LpVariable,
     LpBinary,
     LpStatus,
+    PULP_CBC_CMD,
     lpSum,
     value,
 )
@@ -22,6 +23,38 @@ INTEGRANTES = [
 
 class ErrorCuadroInviable(RuntimeError):
     """El modelo no puede satisfacer simultáneamente sus reglas obligatorias."""
+
+
+def _resolver_con_limite(prob, etapa, segundos=30):
+    """Resuelve con límite de tiempo y acepta una solución factible no óptima."""
+    solver = PULP_CBC_CMD(
+        msg=True,
+        timeLimit=segundos,
+        gapRel=0.02,
+        threads=2,
+    )
+    prob.solve(solver)
+    estado = LpStatus.get(prob.status, str(prob.status))
+    estado_solucion = getattr(prob, "sol_status", None)
+    valor_objetivo = value(prob.objective) if prob.objective is not None else None
+
+    # PuLP distingue entre una solución óptima y una solución entera factible
+    # encontrada antes de agotarse el tiempo. Ambas sirven para continuar; la
+    # validación independiente del cuadro sigue siendo obligatoria al final.
+    tiene_solucion = (
+        estado_solucion in (1, 2)
+        and valor_objetivo is not None
+    )
+    if tiene_solucion:
+        if estado_solucion == 1:
+            return f"Óptimo ({etapa})"
+        return f"Factible con límite de {segundos}s ({etapa})"
+
+    raise ErrorCuadroInviable(
+        f"El optimizador no encontró una solución factible en la etapa '{etapa}' "
+        f"dentro de {segundos} segundos. Estado de PuLP: {estado}. "
+        "No se generó el cuadro; puedes reintentar o revisar las restricciones."
+    )
 
 
 def _domingo_pascua(ano):
@@ -343,13 +376,7 @@ def generar_cuadro_pulp(
         objetivo_excepciones = lpSum(excepciones_cobertura)
         prob.sense = LpMinimize
         prob.setObjective(objetivo_excepciones)
-        prob.solve()
-        estado_excepciones = LpStatus.get(prob.status, str(prob.status))
-        if estado_excepciones != "Optimal":
-            raise ErrorCuadroInviable(
-                f"No existe una solución que respete cobertura y restricciones obligatorias para {mes:02d}/{ano}. "
-                f"Estado de PuLP: {estado_excepciones}."
-            )
+        estado_excepciones = _resolver_con_limite(prob, "excepciones de cobertura", 30)
         minimo_excepciones = int(round(value(objetivo_excepciones) or 0))
         prob += objetivo_excepciones == minimo_excepciones, "fijar_minimo_excepciones_cobertura"
 
@@ -361,13 +388,7 @@ def generar_cuadro_pulp(
             objetivo_nivel = lpSum(solicitudes_por_prioridad[nivel])
             prob.sense = LpMinimize
             prob.setObjective(objetivo_nivel)
-            prob.solve()
-            estado = LpStatus.get(prob.status, str(prob.status))
-            if estado != "Optimal":
-                raise ErrorCuadroInviable(
-                    f"No existe un cuadro que cumpla las restricciones obligatorias para {mes:02d}/{ano}. "
-                    f"Estado de PuLP: {estado}. Revisa cobertura, vacaciones, descansos y reglas individuales."
-                )
+            estado = _resolver_con_limite(prob, f"solicitudes prioridad {nivel}", 15)
             mejor_valor = int(round(value(objetivo_nivel) or 0))
             prob += objetivo_nivel == mejor_valor, f"fijar_prioridad_{indice}_{nivel}"
 
@@ -417,13 +438,7 @@ def generar_cuadro_pulp(
     brecha_fin_semana = tasa_fin_semana_max - tasa_fin_semana_min
     prob.sense = LpMinimize
     prob.setObjective(brecha_fin_semana)
-    prob.solve()
-    estado_equidad = LpStatus.get(prob.status, str(prob.status))
-    if estado_equidad != "Optimal":
-        raise ErrorCuadroInviable(
-            f"No se pudo equilibrar la carga de fines de semana para {mes:02d}/{ano}. "
-            f"Estado de PuLP: {estado_equidad}."
-        )
+    estado_equidad = _resolver_con_limite(prob, "equidad de fines de semana", 25)
     mejor_brecha_fin_semana = value(brecha_fin_semana)
     prob += (
         brecha_fin_semana <= (mejor_brecha_fin_semana or 0) + 0.02,
@@ -476,12 +491,7 @@ def generar_cuadro_pulp(
     )
     prob.sense = LpMaximize
     prob.setObjective(objetivo_final)
-    prob.solve()
-    estado = LpStatus.get(prob.status, str(prob.status))
-    if estado != "Optimal":
-        raise ErrorCuadroInviable(
-            f"No se pudo obtener una solución final válida para {mes:02d}/{ano}. Estado de PuLP: {estado}."
-        )
+    estado = _resolver_con_limite(prob, "optimización final", 60)
 
     # Validación independiente de las asignaciones antes de construir la tabla.
     asignaciones = {}
@@ -652,6 +662,7 @@ def generar_cuadro_pulp(
     df.attrs["reporte_carga"] = reporte_carga
     df.attrs["diagnostico"] = {
         "estado": estado,
+        "tiempos_solver": "CBC limitado por fase: cobertura 30s; cada prioridad 15s; equidad 25s; final 60s; brecha relativa objetivo 2%.",
         "solicitudes_incumplidas": len(incumplimientos),
         "patrones_n_p_n_p": len(patrones),
         "regla_carga": "Objetivos proporcionales suaves; cobertura y reglas duras tienen prioridad",
