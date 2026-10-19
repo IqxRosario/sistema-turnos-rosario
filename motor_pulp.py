@@ -5,14 +5,13 @@ import calendar
 
 def resolver_turnos(df_sugerencias, mes=11, ano=2026):
     """
-    Optimizador PuLP robusto para la programación de turnos médicos.
+    Optimizador PuLP para la programación de turnos médicos.
     Garantiza factibilidad matemática, restricciones estrictas de salud laboral
     y cumplimiento jerárquico de peticiones por prioridad.
     """
     num_dias = calendar.monthrange(ano, mes)[1]
     dias = list(range(1, num_dias + 1))
     
-    # Mapeo de días de la semana (Noviembre 2026: Día 1 es Domingo)
     nombres_dias_semana = ['LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO', 'DOMINGO']
     dias_semana_mapeo = {d: [] for d in nombres_dias_semana}
     
@@ -28,12 +27,11 @@ def resolver_turnos(df_sugerencias, mes=11, ano=2026):
     modelo = pulp.LpProblem("Optimizacion_Turnos_Hospital", pulp.LpMinimize)
     tipos_turno = ['C', 'N', 'P', 'D', 'V', 'L']
     
-    # Variables de decisión
     x = pulp.LpVariable.dicts("x", ((p, d, t) for p in integrantes for d in dias for t in tipos_turno), cat='Binary')
     
     penalizaciones = []
     
-    # 1. Exactamente un turno por persona por día
+    # 1. Un solo turno por persona por día
     for p in integrantes:
         for d in dias:
             modelo += pulp.lpSum([x[p, d, t] for t in tipos_turno]) == 1, f"Un_turno_{p}_{d}"
@@ -53,7 +51,7 @@ def resolver_turnos(df_sugerencias, mes=11, ano=2026):
         modelo += pulp.lpSum([x[p, d, 'N'] for p in integrantes]) == 2, f"Cobertura_Noche_{d}"
         modelo += pulp.lpSum([x[p, d, 'C'] for p in integrantes]) >= 4, f"Cobertura_Corrido_{d}"
 
-    # 5. Noches (4 a 5) y EQUILIBRIO DE TURNOS TOTALES (16 a 18 turnos)
+    # 5. Noches (4 a 5) y Rango equitativo de turnos de trabajo (14 a 18)
     for p in integrantes:
         row_p = df_sugerencias[df_sugerencias['NOMBRE'].str.strip().str.upper() == p].iloc[0]
         tiene_vac = pd.notna(row_p.get('VACACIONES'))
@@ -64,41 +62,41 @@ def resolver_turnos(df_sugerencias, mes=11, ano=2026):
             modelo += noches_total <= 5, f"Max_noches_{p}"
             
             turnos_totales = pulp.lpSum([x[p, d, 'C'] + x[p, d, 'N'] for d in dias])
-            modelo += turnos_totales >= 16, f"Min_turnos_equitativos_{p}"
+            modelo += turnos_totales >= 14, f"Min_turnos_equitativos_{p}"
             modelo += turnos_totales <= 18, f"Max_turnos_equitativos_{p}"
 
-    # 6. Vacaciones continuas (Juan Camilo Pérez del 5 al 24)
+    # 6. Vacaciones continuas
     for index, row in df_sugerencias.iterrows():
         p = str(row['NOMBRE']).strip().upper()
         if pd.notna(row.get('VACACIONES')):
             vac_str = str(row['VACACIONES']).strip()
             if '-' in vac_str:
-                inicio, fin = [int(v.strip()) for v in vac_str.split('-')]
-                for d in range(inicio, fin + 1):
-                    modelo += x[p, d, 'V'] == 1, f"Vacaciones_{p}_{d}"
+                parts = [v.strip() for v in vac_str.split('-')]
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    inicio, fin = int(parts[0]), int(parts[1])
+                    for d in range(inicio, fin + 1):
+                        if 1 <= d <= num_dias:
+                            modelo += x[p, d, 'V'] == 1, f"Vacaciones_{p}_{d}"
 
-    # 7. PROHIBICIONES DURA DE NOCHES POR SALUD E INCOMPATIBILIDAD
+    # 7. PROHIBICIONES DURAS DE NOCHES POR SALUD LABORAL
     for p in integrantes:
-        # JHON RIOS: Cero noches los Lunes
         if p == "JHON RIOS":
             for d in dias_semana_mapeo['LUNES']:
                 modelo += x[p, d, 'N'] == 0, f"Jhon_no_noche_lunes_{d}"
                 
-        # GINELAP: Cero noches los Miércoles
         if p == "GINELAP":
             for d in dias_semana_mapeo['MIERCOLES']:
                 modelo += x[p, d, 'N'] == 0, f"Ginelap_no_noche_miercoles_{d}"
                 
-        # GERLIS DOMINGUEZ: Cero noches los Domingos
         if p == "GERLIS DOMINGUEZ":
             for d in dias_semana_mapeo['DOMINGO']:
                 modelo += x[p, d, 'N'] == 0, f"Gerlis_no_noche_domingo_{d}"
 
-    # 8. SOLICITUDES ESPECÍFICAS Y PENALIZACIÓN JERÁRQUICA DE DÍAS LIBRES
+    # 8. SOLICITUDES ESPECÍFICAS PONDERADAS POR PRIORIDAD
     for index, row in df_sugerencias.iterrows():
         p = str(row['NOMBRE']).strip().upper()
         prio_val = float(row.get('PRIORIDAD', 10)) if pd.notna(row.get('PRIORIDAD')) else 10.0
-        peso_prioridad = max(100, int((13.0 - prio_val) * 100))
+        peso_prioridad = max(100, int((20.0 - prio_val) * 500))
         
         if pd.notna(row.get('LIBRES SOLICITADOS (Mes)')):
             solicitudes = str(row['LIBRES SOLICITADOS (Mes)']).split(',')
@@ -108,15 +106,13 @@ def resolver_turnos(df_sugerencias, mes=11, ano=2026):
                 
                 if req.endswith('N'):
                     d = int(req.replace('N', ''))
-                    modelo += x[p, d, 'N'] == 1, f"Forzar_Noche_Solicitada_{p}_{d}"
+                    penalizaciones.append(peso_prioridad * (1 - x[p, d, 'N']))
                 elif req.endswith('C'):
                     d = int(req.replace('C', ''))
-                    modelo += x[p, d, 'C'] == 1, f"Forzar_Corrido_Solicitado_{p}_{d}"
+                    penalizaciones.append(peso_prioridad * (1 - x[p, d, 'C']))
                 elif req.isdigit():
                     d = int(req)
-                    # Penalización alta si no recibe Libre 'L'
                     penalizaciones.append(peso_prioridad * (1 - x[p, d, 'L']))
-                    # Penalización si amanece en Post-turno 'P' en su día libre
                     if d > 1:
                         penalizaciones.append((peso_prioridad // 2) * x[p, d - 1, 'N'])
 
@@ -140,7 +136,6 @@ def resolver_turnos(df_sugerencias, mes=11, ano=2026):
                             max_exc = 0
                         modelo += pulp.lpSum(excepciones) <= max_exc, f"Max_exc_fijo_{p}_{d_fijo}"
 
-    # Función Objetivo: Minimizar penalizaciones por incumplimientos
     if penalizaciones:
         modelo += pulp.lpSum(penalizaciones)
     else:
@@ -150,7 +145,6 @@ def resolver_turnos(df_sugerencias, mes=11, ano=2026):
     estado = modelo.solve(solver)
     status_str = pulp.LpStatus[estado]
     
-    # Reconstrucción de la matriz de resultados
     matriz_res = []
     for p in integrantes:
         row_res = {'NOMBRE': p}
@@ -166,7 +160,6 @@ def resolver_turnos(df_sugerencias, mes=11, ano=2026):
         
     df_res = pd.DataFrame(matriz_res)
     
-    # Totales y resumen
     domingos_list = dias_semana_mapeo['DOMINGO']
     sabados_list = dias_semana_mapeo['SABADO']
     fds_dias = set(domingos_list + sabados_list)
