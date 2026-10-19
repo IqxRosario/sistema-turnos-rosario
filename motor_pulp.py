@@ -173,6 +173,11 @@ def generar_cuadro_pulp(
         for p in INTEGRANTES
     }
 
+    # Excesos de racha: son penalizaciones suaves, no bloqueos absolutos.
+    # Se usan para favorecer descanso tras 3 jornadas consecutivas, permitiendo
+    # superar esa racha cuando la cobertura lo necesite.
+    penalizaciones_racha = []
+
     # Cada solicitud tiene una variable de incumplimiento. Estas variables no
     # permiten romper las reglas duras; solo hacen explícita la petición no atendida.
     incumple = {}
@@ -210,18 +215,20 @@ def generar_cuadro_pulp(
             prob += x[p][1]["N"] == 0, f"empalme_noche_N_{p.replace(' ', '_')}"
 
         racha = max(0, int(hist_racha.get(p, 0) or 0))
+        # El historial anterior también cuenta para la preferencia de descanso,
+        # pero nunca impide trabajar si la cobertura lo requiere.
         if racha >= 3:
-            prob += x[p][1]["C"] + x[p][1]["N"] == 0, f"empalme_racha3_{p.replace(' ', '_')}"
-        elif racha == 2:
-            prob += (
-                x[p][1]["C"] + x[p][1]["N"] + x[p][2]["C"] + x[p][2]["N"] <= 1,
-                f"empalme_racha2_{p.replace(' ', '_')}"
-            )
+            exceso = LpVariable(f"exceso_empalme_racha3_{p.replace(' ', '_')}", cat=LpBinary)
+            prob += x[p][1]["C"] + x[p][1]["N"] <= exceso, f"empalme_racha3_suave_{p.replace(' ', '_')}"
+            penalizaciones_racha.append(exceso)
+        elif racha == 2 and dias_mes >= 2:
+            exceso = LpVariable(f"exceso_empalme_racha2_{p.replace(' ', '_')}", cat=LpBinary)
+            prob += x[p][1]["C"] + x[p][1]["N"] + x[p][2]["C"] + x[p][2]["N"] <= 1 + exceso, f"empalme_racha2_suave_{p.replace(' ', '_')}"
+            penalizaciones_racha.append(exceso)
         elif racha == 1 and dias_mes >= 3:
-            # Un turno el último día anterior + máximo 2 en los primeros 3 días.
-            prob += lpSum(
-                x[p][d][t] for d in range(1, 4) for t in turnos
-            ) <= 2, f"empalme_racha1_{p.replace(' ', '_')}"
+            exceso = LpVariable(f"exceso_empalme_racha1_{p.replace(' ', '_')}", cat=LpBinary)
+            prob += lpSum(x[p][d][t] for d in range(1, 4) for t in turnos) <= 2 + exceso, f"empalme_racha1_suave_{p.replace(' ', '_')}"
+            penalizaciones_racha.append(exceso)
 
     # Cobertura, vacaciones y restricciones individuales.
     for d in dias:
@@ -250,11 +257,15 @@ def generar_cuadro_pulp(
                     f"descanso_post_noche_{p.replace(' ', '_')}_{d}"
                 )
 
-            # Máximo 3 turnos C/N en cualquier ventana de 4 días.
+            # Preferencia: máximo 3 jornadas trabajadas en cualquier ventana
+            # de 4 días. La variable de exceso permite una cuarta jornada si la
+            # cobertura lo necesita; se penaliza fuertemente en el objetivo final.
             if d <= dias_mes - 3:
+                exceso = LpVariable(f"exceso_racha4_{p.replace(' ', '_')}_{d}", cat=LpBinary)
                 prob += lpSum(
                     x[p][d + k][t] for k in range(4) for t in turnos
-                ) <= 3, f"max_3_en_4_{p.replace(' ', '_')}_{d}"
+                ) <= 3 + exceso, f"preferencia_max_3_en_4_{p.replace(' ', '_')}_{d}"
+                penalizaciones_racha.append(exceso)
 
         # Restricciones individuales confirmadas por la usuaria.
         # Jhon: lunes sin N; martes solo L o N (nunca C).
@@ -378,7 +389,10 @@ def generar_cuadro_pulp(
         prob.setObjective(objetivo_excepciones)
         estado_excepciones = _resolver_con_limite(prob, "excepciones de cobertura", 30)
         minimo_excepciones = int(round(value(objetivo_excepciones) or 0))
-        prob += objetivo_excepciones == minimo_excepciones, "fijar_minimo_excepciones_cobertura"
+        # No fijar igualdad: si CBC agotó el tiempo, el valor obtenido puede no ser
+        # el mínimo global. El límite <= conserva la solución factible encontrada
+        # sin impedir que las fases posteriores mejoren el número de excepciones.
+        prob += objetivo_excepciones <= minimo_excepciones, "limite_excepciones_cobertura"
 
     # 2) Optimización lexicográfica de solicitudes: se fija cada nivel de prioridad.
     # Un número menor representa mayor prioridad.
@@ -390,9 +404,27 @@ def generar_cuadro_pulp(
             prob.setObjective(objetivo_nivel)
             estado = _resolver_con_limite(prob, f"solicitudes prioridad {nivel}", 15)
             mejor_valor = int(round(value(objetivo_nivel) or 0))
-            prob += objetivo_nivel == mejor_valor, f"fijar_prioridad_{indice}_{nivel}"
+            # Si la búsqueda terminó por tiempo, no asumir que este valor es óptimo.
+            # Mantenerlo como cota evita empeorar la prioridad y permite mejorarla.
+            prob += objetivo_nivel <= mejor_valor, f"limite_prioridad_{indice}_{nivel}"
 
-    # 2) Equidad de fines de semana/festivos.
+    # 2) Equidad de carga total antes de optimizar fines de semana.
+    # Los objetivos individuales ya se escalan por los días disponibles; minimizar
+    # estas desviaciones reduce diferencias injustificadas en el total de turnos.
+    objetivo_equidad_carga = lpSum(
+        2 * d_turnos + 5 * d_noches
+        for d_turnos, d_noches in desviaciones_carga
+    )
+    prob.sense = LpMinimize
+    prob.setObjective(objetivo_equidad_carga)
+    estado_carga = _resolver_con_limite(prob, "equidad de carga total", 35)
+    mejor_carga = value(objetivo_equidad_carga)
+    if mejor_carga is not None:
+        # Tolerancia pequeña: conserva una solución cercana aunque el solver no
+        # haya probado optimalidad, y deja margen a las fases siguientes.
+        prob += objetivo_equidad_carga <= mejor_carga + 0.5, "limite_equidad_carga_total"
+
+    # 3) Equidad de fines de semana/festivos.
     # Se compara la proporción de días de fin de semana trabajados respecto a los
     # días de fin de semana disponibles de cada persona. Así, las vacaciones y
     # los descansos obligatorios de Ginelap no penalizan injustamente.
@@ -487,6 +519,7 @@ def generar_cuadro_pulp(
     objetivo_final = (
         lpSum(pesos_flexibles)
         - 200 * lpSum(penaliza_patron.values())
+        - 250 * lpSum(penalizaciones_racha)
         - 10 * penalizacion_carga
     )
     prob.sense = LpMaximize
@@ -519,10 +552,8 @@ def generar_cuadro_pulp(
         for d in dias[:-1]:
             if asignaciones[p, d] == "N" and asignaciones[p, d + 1] in {"C", "N"}:
                 errores_validacion.append(f"{p}: no descansa después de N en día {d}")
-        for d in range(1, dias_mes - 2):
-            total_4 = sum(bool(asignaciones[p, d + k]) for k in range(4))
-            if total_4 > 3:
-                errores_validacion.append(f"{p}: más de 3 turnos en los días {d}-{d + 3}")
+        # Las rachas superiores a 3 ya no invalidan el cuadro: son excepciones
+        # permitidas por cobertura y se documentan en el diagnóstico final.
 
     # Validación independiente de las reglas individuales y los días fijos.
     for d in dias:
@@ -643,7 +674,25 @@ def generar_cuadro_pulp(
     for p in INTEGRANTES:
         if hist_noche.get(p, False) and dias_mes >= 2 and asignaciones[p, 2] == "N":
             patrones.append({"Integrante": p, "Día primera noche": "Mes anterior", "Día segunda noche": 2})
+    reporte_rachas = []
+    for p in INTEGRANTES:
+        racha_actual = 0
+        inicio_racha = None
+        for d in dias:
+            if asignaciones[p, d] in {"C", "N"}:
+                if racha_actual == 0:
+                    inicio_racha = d
+                racha_actual += 1
+            else:
+                if racha_actual > 3:
+                    reporte_rachas.append({"Integrante": p, "Desde día": inicio_racha, "Hasta día": d - 1, "Días consecutivos": racha_actual, "Observación": "Excepción permitida; revisar necesidad de cobertura"})
+                racha_actual = 0
+                inicio_racha = None
+        if racha_actual > 3:
+            reporte_rachas.append({"Integrante": p, "Desde día": inicio_racha, "Hasta día": dias_mes, "Días consecutivos": racha_actual, "Observación": "Racha continúa al cierre del mes; revisar empalme"})
+
     df.attrs["incumplimientos"] = incumplimientos
+    df.attrs["excepciones_rachas"] = reporte_rachas
     df.attrs["patrones_n_p_n_p"] = patrones
     reporte_carga = []
     for persona in INTEGRANTES:
@@ -662,9 +711,11 @@ def generar_cuadro_pulp(
     df.attrs["reporte_carga"] = reporte_carga
     df.attrs["diagnostico"] = {
         "estado": estado,
-        "tiempos_solver": "CBC limitado por fase: cobertura 30s; cada prioridad 15s; equidad 25s; final 60s; brecha relativa objetivo 2%.",
+        "tiempos_solver": "CBC limitado por fase: cobertura 30s; cada prioridad 15s; equidad de carga 35s; equidad de fin de semana 25s; final 60s. Las fases limitadas fijan cotas, no falsas igualdades de optimalidad.",
         "solicitudes_incumplidas": len(incumplimientos),
         "patrones_n_p_n_p": len(patrones),
-        "regla_carga": "Objetivos proporcionales suaves; cobertura y reglas duras tienen prioridad",
+        "regla_carga": "Objetivos proporcionales por disponibilidad; fase explícita de equidad de carga antes de fines de semana; cobertura y reglas duras tienen prioridad",
+        "regla_descanso": "Se favorece descanso después de 3 jornadas consecutivas; rachas mayores se permiten por cobertura y se reportan en df.attrs['excepciones_rachas']",
+        "excepciones_rachas": len(reporte_rachas),
     }
     return df
