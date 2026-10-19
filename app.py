@@ -1,220 +1,317 @@
-import streamlit as st
 import calendar
 import datetime
-import pandas as pd
 import io
 import re
-from motor_pulp import generar_cuadro_pulp
+import unicodedata
 
+import pandas as pd
+import streamlit as st
+
+from motor_pulp import generar_cuadro_pulp, ErrorCuadroInviable
+
+
+# -----------------------------------------------------------------------------
+# CONFIGURACIÓN GENERAL
+# -----------------------------------------------------------------------------
 INTEGRANTES = [
     "GERLIS DOMINGUEZ", "ANGIE BERNAL", "JHON RIOS", "MARCELA CASTRO",
     "ZARIANA REYES", "IVETTE VALENCIA", "GINELAP", "ANA ESCOBAR",
-    "JUAN CAMILO PEREZ", "ERNESTO MUSKUS", "RANCES ARGUMEDO", 
-    "KELLY CAUSIL", "JOAN CARMONA"
+    "JUAN CAMILO PEREZ", "ERNESTO MUSKUS", "RANCES ARGUMEDO",
+    "KELLY CAUSIL", "JOAN CARMONA",
 ]
 
-LINK_SHEETS_DEFECTO = "https://docs.google.com/spreadsheets/d/1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?pli=1&gid=0#gid=0"
+LINK_SHEETS_DEFECTO = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1PZwvv0XQtSEDfC5GO6OlG7Fn8HqJNQUBZ1RNSRgBsss/edit?gid=0#gid=0"
+)
 
 DIAS_MAP_TEXTO = {
-    'LUNES': 0, 'MARTES': 1, 'MIERCOLES': 2, 'JUEVES': 3, 'VIERNES': 4, 'SABADO': 5, 'DOMINGO': 6,
-    'LUN': 0, 'MAR': 1, 'MIE': 2, 'JUE': 3, 'VIE': 4, 'SAB': 5, 'DOM': 6
+    "LUNES": 0,
+    "MARTES": 1,
+    "MIERCOLES": 2,
+    "JUEVES": 3,
+    "VIERNES": 4,
+    "SABADO": 5,
+    "DOMINGO": 6,
 }
 
+CODIGOS_COLOR = {
+    "C": "#F4D35E",
+    "N": "#5DADE2",
+    "P": "#F5B7B1",
+    "D": "#D5D8DC",
+    "V": "#BB8FCE",
+    "L": "#82E0AA",
+}
+
+
+# -----------------------------------------------------------------------------
+# FUNCIONES AUXILIARES
+# -----------------------------------------------------------------------------
 def normalizar_texto(texto):
-    if not isinstance(texto, str):
+    """Quita tildes y normaliza texto para comparar encabezados y nombres."""
+    if texto is None:
         return ""
-    import unicodedata
-    s = unicodedata.normalize('NFD', texto)
-    s = s.encode('ascii', 'ignore').decode("utf-8")
-    return s.strip().upper()
+    texto = str(texto).strip().upper()
+    return "".join(
+        caracter
+        for caracter in unicodedata.normalize("NFD", texto)
+        if unicodedata.category(caracter) != "Mn"
+    )
+
 
 def parsear_rangos_y_dias(texto):
-    dias = []
-    if not texto or str(texto) == 'nan':
-        return dias
-    partes = str(texto).replace(' Y ', ',').replace('&', ',').split(',')
-    for p in partes:
-        p = p.strip()
-        if '-' in p:
-            rng = p.split('-')
-            if len(rng) == 2 and rng[0].isdigit() and rng[1].isdigit():
-                dias.extend(list(range(int(rng[0]), int(rng[1]) + 1)))
-        elif p.isdigit():
-            dias.append(int(p))
-    return list(set(dias))
+    """Convierte expresiones como '1-4, 7 y 10' en [1, 2, 3, 4, 7, 10]."""
+    if texto is None or pd.isna(texto):
+        return []
 
-def procesar_historial_empalme(archivo):
-    hist_noche = {p: False for p in INTEGRANTES}
-    hist_consecutivos = {p: 0 for p in INTEGRANTES}
-    
-    if archivo is None:
-        return hist_noche, hist_consecutivos
-        
-    try:
-        df_prev = pd.read_excel(archivo)
-        df_prev.columns = [str(c).strip() for c in df_prev.columns]
-        
-        col_nom = df_prev.columns[0]
-        cols_dias = sorted([int(c) for c in df_prev.columns if c.isdigit()])
-        
-        if cols_dias:
-            u_dia = str(cols_dias[-1])
-            for _, r in df_prev.iterrows():
-                nom_sheet = normalizar_texto(r[col_nom])
-                nom_real = next((p for p in INTEGRANTES if nom_sheet in p or p in nom_sheet), None)
-                if nom_real:
-                    val_u = str(r[u_dia]).strip().upper()
-                    if 'N' in val_u:
-                        hist_noche[nom_real] = True
-                    
-                    racha = 0
-                    for d in reversed(cols_dias):
-                        val = str(r[str(d)]).strip().upper()
-                        if any(t in val for t in ['C', 'N']):
-                            racha += 1
-                        else:
-                            break
-                    hist_consecutivos[nom_real] = racha
-    except Exception as e:
-        st.warning(f"No se pudo procesar el historial de empalme: {e}")
-        
-    return hist_noche, hist_consecutivos
+    texto = str(texto).strip()
+    if not texto:
+        return []
+
+    texto = re.sub(r"\s+Y\s+|\s+&\s+", ",", texto, flags=re.IGNORECASE)
+    partes = re.split(r"[,;\n]+", texto)
+    resultado = []
+
+    for parte in partes:
+        parte = parte.strip()
+        if not parte:
+            continue
+
+        coincidencia = re.fullmatch(r"(\d+)\s*-\s*(\d+)", parte)
+        if coincidencia:
+            inicio, fin = map(int, coincidencia.groups())
+            if inicio <= fin:
+                resultado.extend(range(inicio, fin + 1))
+            else:
+                resultado.extend(range(fin, inicio + 1))
+            continue
+
+        for numero in re.findall(r"\d+", parte):
+            resultado.append(int(numero))
+
+    return sorted(set(resultado))
+
+
+def _extraer_gid(url):
+    coincidencia = re.search(r"[?&#]gid=(\d+)", str(url))
+    return coincidencia.group(1) if coincidencia else "0"
+
+
+def _url_csv_sheets(url):
+    """Transforma una URL de Google Sheets en una URL de exportación CSV."""
+    url = str(url).strip()
+    coincidencia = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", url)
+    if not coincidencia:
+        raise ValueError("La URL no parece ser una hoja válida de Google Sheets.")
+    sheet_id = coincidencia.group(1)
+    gid = _extraer_gid(url)
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+
+
+def _buscar_columna(columnas, patrones):
+    """Devuelve la primera columna cuyo nombre normalizado contiene un patrón."""
+    for columna in columnas:
+        nombre = normalizar_texto(columna)
+        if any(patron in nombre for patron in patrones):
+            return columna
+    return None
+
+
+def _parsear_dias_fijos(texto):
+    """Interpreta nombres de días de la semana como días fijos de descanso."""
+    if texto is None or pd.isna(texto):
+        return []
+    texto = normalizar_texto(texto)
+    encontrados = []
+    for nombre, numero in DIAS_MAP_TEXTO.items():
+        if re.search(rf"\b{nombre}\b", texto):
+            encontrados.append(numero)
+    return sorted(set(encontrados))
+
+
+def _nombre_integrante(valor):
+    """Busca una coincidencia segura del nombre en la lista del equipo."""
+    nombre = normalizar_texto(valor)
+    if not nombre:
+        return None
+
+    exactos = [p for p in INTEGRANTES if normalizar_texto(p) == nombre]
+    if len(exactos) == 1:
+        return exactos[0]
+
+    coincidencias = [
+        p for p in INTEGRANTES
+        if nombre in normalizar_texto(p) or normalizar_texto(p) in nombre
+    ]
+    return coincidencias[0] if len(coincidencias) == 1 else None
+
 
 def procesar_configuracion_y_sugerencias(link):
+    """Lee la hoja seleccionada y devuelve libres fijos, vacaciones, solicitudes y prioridades."""
     libres_fijos = {p: [] for p in INTEGRANTES}
     vacaciones = {p: [] for p in INTEGRANTES}
     sugerencias = {p: {} for p in INTEGRANTES}
     prioridades = {p: 99 for p in INTEGRANTES}
-    
-    if not link or not link.startswith("http"):
-        return libres_fijos, vacaciones, sugerencias, prioridades
-        
+
+    url_csv = _url_csv_sheets(link)
     try:
-        base_url = link.split('/edit')[0]
-        csv_link = f"{base_url}/export?format=csv"
-        match = re.search(r'gid=(\d+)', link)
-        if match:
-            csv_link += f"&gid={match.group(1)}"
-        
-        df = pd.read_csv(csv_link)
-        df.columns = [normalizar_texto(c) for c in df.columns]
-        
-        col_nom = next((c for c in df.columns if 'NOMBRE' in c), None)
-        col_sug = next((c for c in df.columns if 'PETICION' in c or 'LIBRES SOLICITADO' in c or 'SUGERENCIA' in c), None)
-        col_fijo = next((c for c in df.columns if 'FIJO' in c or 'ESTUDIO' in c), None)
-        col_vac = next((c for c in df.columns if 'VACACIO' in c), None)
-        col_prio = next((c for c in df.columns if 'ORDEN' in c or 'PRIORIDAD' in c or 'LLEGADA' in c), None)
-        
-        if col_nom:
-            for _, r in df.iterrows():
-                nom_sheet = normalizar_texto(r[col_nom])
-                nom_real = next((p for p in INTEGRANTES if nom_sheet in p or p in nom_sheet), None)
-                
-                if nom_real:
-                    # 0. Prioridad por Orden de Llegada
-                    if col_prio and str(r[col_prio]).replace('.0', '').isdigit():
-                        prioridades[nom_real] = int(float(r[col_prio]))
+        df = pd.read_csv(url_csv)
+    except Exception as exc:
+        raise RuntimeError(
+            "No se pudo leer Google Sheets. Verifica que la hoja tenga permiso "
+            "de lectura mediante enlace y que la URL corresponda a la pestaña correcta. "
+            f"Detalle: {exc}"
+        ) from exc
 
-                    # 1. Libres Fijos
-                    if col_fijo and str(r[col_fijo]) != 'nan':
-                        txt_fijo = normalizar_texto(r[col_fijo])
-                        for d_nombre, d_num in DIAS_MAP_TEXTO.items():
-                            if d_nombre in txt_fijo and d_num not in libres_fijos[nom_real]:
-                                libres_fijos[nom_real].append(d_num)
+    if df.empty:
+        raise RuntimeError("La hoja de Google Sheets está vacía.")
 
-                    # 2. Vacaciones
-                    if col_vac and str(r[col_vac]) != 'nan':
-                        vacaciones[nom_real] = parsear_rangos_y_dias(r[col_vac])
+    df.columns = [str(c).strip() for c in df.columns]
+    col_nombre = _buscar_columna(df.columns, ["NOMBRE", "INTEGRANTE", "EMPLEADO", "PERSONA"])
+    col_peticion = _buscar_columna(
+        df.columns, ["PETICION", "LIBRES SOLICITADO", "SUGERENCIA", "SOLICITUD", "TURNO SOLICITADO"]
+    )
+    col_fijo = _buscar_columna(df.columns, ["FIJO", "ESTUDIO", "DIA FIJO", "DIAS FIJOS"])
+    col_vacaciones = _buscar_columna(df.columns, ["VACACIO", "VACACIONES", "VACACION"])
+    col_prioridad = _buscar_columna(df.columns, ["ORDEN", "PRIORIDAD", "LLEGADA"])
 
-                    # 3. Sugerencias / Libres del mes
-                    if col_sug and str(r[col_sug]) != 'nan':
-                        txt_sug = str(r[col_sug]).strip()
-                        elementos = txt_sug.replace(' Y ', ',').replace('&', ',').split(',')
-                        for elem in elementos:
-                            elem = elem.strip().upper()
-                            match_turno = re.match(r'(\d+)([NCL])', elem)
-                            if match_turno:
-                                dia_num, t_cod = match_turno.groups()
-                                sugerencias[nom_real][dia_num] = t_cod
-                            else:
-                                dias_lib = parsear_rangos_y_dias(elem)
-                                for d_lib in dias_lib:
-                                    sugerencias[nom_real][str(d_lib)] = 'L'
-                                    
-    except Exception as e:
-        st.error(f"Error procesando plantilla Google Sheets: {e}")
-        
-    return libres_fijos, vacaciones, sugerencias, prioridades
-
-def aplicar_colores(val):
-    v = str(val).strip()
-    if v == 'C': return 'background-color: #d1e7dd; color: #0f5132; font-weight: bold;'
-    if v == 'N': return 'background-color: #cfe2ff; color: #084298; font-weight: bold;'
-    if v == 'P': return 'background-color: #fff3cd; color: #664d03; font-weight: bold;'
-    if v == 'D': return 'background-color: #f8f9fa; color: #212529;'
-    if v == 'V': return 'background-color: #f8d7da; color: #842029; font-weight: bold;'
-    if v == 'L': return 'background-color: #e2e3e5; color: #41464b; font-weight: bold;'
-    return ''
-
-# --- INTERFAZ STREAMLIT ---
-st.title("🏥 Sistema de Gestión de Turnos Rosario")
-
-st.sidebar.header("⚙️ Configuración del Mes")
-mes_sel = st.sidebar.selectbox("Mes", list(range(1, 13)), index=datetime.datetime.now().month - 1)
-ano_sel = st.sidebar.number_input("Año", min_value=2024, max_value=2030, value=datetime.datetime.now().year)
-
-st.sidebar.header("🔗 Conexión a Google Sheets")
-link_config = st.sidebar.text_input("Link Hoja Unificada (Google Sheets)", value=LINK_SHEETS_DEFECTO)
-st.sidebar.link_button("📊 Abrir Hoja en Google Sheets", LINK_SHEETS_DEFECTO, use_container_width=True)
-
-archivo_previo = st.file_uploader("📁 Cargar Excel de empalme mes anterior (Opcional)", type=["xlsx"])
-
-# --- PESTAÑAS DE GENERACIÓN ---
-tab1, tab2 = st.tabs(["⚡ Motor Pro (Optimización PuLP)", "🎲 Motor Clásico (Simulación)"])
-
-with tab1:
-    st.subheader("Optimización Matemática en 1 solo paso")
-    if st.button("🚀 GENERAR CON OPTIMIZACIÓN", type="primary", use_container_width=True, key="btn_pulp"):
-        conf, vacs, sug, prio = procesar_configuracion_y_sugerencias(link_config)
-        hist_noche, hist_racha = procesar_historial_empalme(archivo_previo)
-        
-        with st.spinner('Resolviendo modelo de optimización matemática...'):
-            res = generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vacs, prio)
-            
-        dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
-        columnas_dias = [str(d) for d in range(1, dias_en_mes + 1)]
-        
-        st.success("✅ ¡Turnos calculados matemáticamente respetando orden de llegada y restricciones!")
-        st.dataframe(res.style.map(aplicar_colores, subset=columnas_dias), use_container_width=True)
-        
-        output = io.BytesIO()
-        res_final_estilo = res.style.map(aplicar_colores, subset=columnas_dias)
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            res_final_estilo.to_excel(writer, sheet_name='Turnos')
-            worksheet = writer.sheets['Turnos']
-            for i, col in enumerate(res.columns):
-                worksheet.set_column(i, i, 10)
-        
-        st.download_button(
-            label="📥 Descargar Excel Optimizado",
-            data=output.getvalue(),
-            file_name=f"Turnos_{mes_sel}_{ano_sel}_PuLP.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
+    if col_nombre is None:
+        raise RuntimeError(
+            "No encontré una columna de nombres. Usa un encabezado como 'NOMBRE' o 'INTEGRANTE'."
         )
 
-with tab2:
-    st.subheader("Simulación por N-iteraciones aleatorias")
-    iteraciones = st.slider("Número de simulaciones", 10, 200, 50)
-    if st.button("🚀 GENERAR ESCENARIO SIMULADO", type="secondary", use_container_width=True, key="btn_clasico"):
-        conf, vacs, sug, prio = procesar_configuracion_y_sugerencias(link_config)
-        hist_noche, hist_racha = procesar_historial_empalme(archivo_previo)
-        
-        with st.spinner('Simulando múltiples escenarios...'):
-            res = generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vacs, prio)
-            
-        dias_en_mes = calendar.monthrange(ano_sel, mes_sel)[1]
-        columnas_dias = [str(d) for d in range(1, dias_en_mes + 1)]
-        
-        st.success("✅ Escenario generado correctamente.")
-        st.dataframe(res.style.map(aplicar_colores, subset=columnas_dias), use_container_width=True)
+    for _, fila in df.iterrows():
+        integrante = _nombre_integrante(fila.get(col_nombre, ""))
+        if integrante is None:
+            continue
+
+        if col_prioridad is not None:
+            valor = fila.get(col_prioridad)
+            try:
+                if pd.notna(valor) and str(valor).strip():
+                    prioridades[integrante] = int(float(valor))
+            except (TypeError, ValueError):
+                pass
+
+        if col_fijo is not None:
+            libres_fijos[integrante] = _parsear_dias_fijos(fila.get(col_fijo, ""))
+
+        if col_vacaciones is not None:
+            vacaciones[integrante] = parsear_rangos_y_dias(fila.get(col_vacaciones, ""))
+
+        if col_peticion is not None:
+            texto_peticion = fila.get(col_peticion, "")
+            if pd.isna(texto_peticion):
+                continue
+            texto_peticion = normalizar_texto(texto_peticion)
+            if not texto_peticion:
+                continue
+
+            encontrados = list(re.finditer(r"(\d+)\s*([NCL])", texto_peticion))
+            dias_con_codigo = set()
+            for coincidencia in encontrados:
+                dia = int(coincidencia.group(1))
+                codigo = coincidencia.group(2)
+                if dia >= 1:
+                    if dia in sugerencias[integrante] and sugerencias[integrante][dia] != codigo:
+                        raise RuntimeError(
+                            f"Solicitudes incompatibles para {integrante}, día {dia}: "
+                            f"{sugerencias[integrante][dia]} y {codigo}. Corrige la hoja antes de continuar."
+                        )
+                    sugerencias[integrante][dia] = codigo
+                    dias_con_codigo.add(dia)
+
+            texto_sin_codigos = re.sub(r"\d+\s*[NCL]", " ", texto_peticion)
+            for dia in parsear_rangos_y_dias(texto_sin_codigos):
+                if dia not in dias_con_codigo and dia >= 1:
+                    if dia in sugerencias[integrante] and sugerencias[integrante][dia] != "L":
+                        raise RuntimeError(
+                            f"Solicitudes incompatibles para {integrante}, día {dia}: "
+                            f"{sugerencias[integrante][dia]} y L. Corrige la hoja antes de continuar."
+                        )
+                    sugerencias[integrante][dia] = "L"
+
+    return libres_fijos, vacaciones, sugerencias, prioridades
+
+
+def procesar_historial_empalme(archivo):
+    """Lee el mes anterior para calcular la noche final y la racha de turnos."""
+    hist_noche = {p: False for p in INTEGRANTES}
+    hist_consecutivos = {p: 0 for p in INTEGRANTES}
+
+    if archivo is None:
+        return hist_noche, hist_consecutivos
+
+    try:
+        if hasattr(archivo, "seek"):
+            archivo.seek(0)
+        df = pd.read_excel(archivo)
+    except Exception as exc:
+        raise RuntimeError(f"No se pudo leer el archivo del mes anterior: {exc}") from exc
+
+    if df.empty or len(df.columns) < 2:
+        return hist_noche, hist_consecutivos
+
+    columna_nombre = df.columns[0]
+    columnas_dias = []
+    for columna in df.columns[1:]:
+        coincidencia = re.fullmatch(r"\s*(\d+)\s*", str(columna))
+        if coincidencia:
+            columnas_dias.append((int(coincidencia.group(1)), columna))
+    columnas_dias.sort(key=lambda elemento: elemento[0])
+    if not columnas_dias:
+        return hist_noche, hist_consecutivos
+
+    for _, fila in df.iterrows():
+        integrante = _nombre_integrante(fila.get(columna_nombre, ""))
+        if integrante is None:
+            continue
+
+        valores = [normalizar_texto(fila.get(columna, "")) for _, columna in columnas_dias]
+        valores = [v if v in {"C", "N", "P", "D", "L", "V"} else "" for v in valores]
+        if valores:
+            hist_noche[integrante] = valores[-1] == "N"
+
+        racha = 0
+        for valor in reversed(valores):
+            if valor in {"C", "N"}:
+                racha += 1
+            else:
+                break
+        hist_consecutivos[integrante] = racha
+
+    return hist_noche, hist_consecutivos
+
+
+def aplicar_colores(df):
+    """Aplica colores a los códigos de turno, sin colorear las columnas de totales."""
+    def color_celda(valor):
+        codigo = str(valor).strip().upper()
+        if codigo in CODIGOS_COLOR:
+            return f"background-color: {CODIGOS_COLOR[codigo]}; color: #202020; text-align: center;"
+        return "text-align: center;"
+
+    columnas_dias = [c for c in df.columns if str(c).isdigit()]
+    return df.style.map(color_celda, subset=columnas_dias)
+
+
+def mostrar_reportes_pulp(df_res):
+    diagnostico = df_res.attrs.get("diagnostico", {})
+    incumplimientos = df_res.attrs.get("incumplimientos", [])
+    patrones = df_res.attrs.get("patrones_n_p_n_p", [])
+    reporte_carga = df_res.attrs.get("reporte_carga", [])
+
+    st.caption(
+        f"Validación PuLP: {diagnostico.get('estado', 'sin estado')} · "
+        f"Solicitudes no satisfechas: {diagnostico.get('solicitudes_incumplidas', 0)} · "
+        f"Patrones N-P-N-P: {diagnostico.get('patrones_n_p_n_p', 0)}"
+    )
+
+    if incumplimientos:
+        st.warning(
+            "El cuadro cumple las restricciones obligatorias, pero algunas solicitudes no pudieron "
+            "atenderse por conflictos con la cobertura o con solicitudes de mayor prioridad. "
+            "Revisa el detalle antes de publicar el horario."
+        )
+        st.dataframe
