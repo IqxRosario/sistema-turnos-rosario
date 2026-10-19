@@ -32,8 +32,11 @@ def obtener_festivos_colombia(ano, mes):
 
 def generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vacs, prio):
     """
-    Motor de optimización matemática PuLP adaptado exactamente a app.py.
-    Aplica cobertura de 2 Corridos en Domingos y Festivos de Colombia, y 4 en días ordinarios.
+    Motor de optimización matemática PuLP adaptado a app.py.
+    Garantiza estricta separación semántica:
+    - V: Solo en días de vacaciones.
+    - L: Solo en días solicitados como libres o fijos.
+    - D: Descansos asignados automáticamente por el sistema.
     """
     num_dias = calendar.monthrange(ano_sel, mes_sel)[1]
     dias = list(range(1, num_dias + 1))
@@ -82,20 +85,30 @@ def generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vac
         dia_idx = (primer_dia_semana + d - 1) % 7
         es_domingo_o_festivo = (dia_idx == 6) or (d in festivos_mes)
         
-        # En Domingos y Festivos se requieren 2 Corridos (C); en días ordinarios 4 Corridos (C)
         req_corridos = 2 if es_domingo_o_festivo else 4
         
         modelo += pulp.lpSum([x[p, d, 'N'] for p in INTEGRANTES]) == 2, f"Cobertura_Noche_{d}"
         modelo += pulp.lpSum([x[p, d, 'C'] for p in INTEGRANTES]) >= req_corridos, f"Cobertura_Corrido_{d}"
 
-    # 6. Vacaciones
+    # 6. Vacaciones ESTRICTAS (V=1 solo en días autorizados, V=0 en el resto)
     for p in INTEGRANTES:
-        dias_vac = vacs.get(p, []) if vacs else []
-        for d in dias_vac:
-            if 1 <= d <= num_dias:
-                modelo += x[p, d, 'V'] == 1, f"Vacaciones_{p}_{d}"
+        dias_vac = set(vacs.get(p, [])) if vacs else set()
+        for d in dias:
+            if d in dias_vac:
+                modelo += x[p, d, 'V'] == 1, f"Vacaciones_Si_{p}_{d}"
+            else:
+                modelo += x[p, d, 'V'] == 0, f"Vacaciones_No_{p}_{d}"
 
-    # 7. Noches (4 a 5) y Equidad de turnos totales (16 a 18) para personas sin vacaciones
+    # 7. Restricción estricta de 'L' (L=1 solo si fue solicitado explícitamente, L=0 en el resto)
+    for p in INTEGRANTES:
+        dict_sug = sug.get(p, {}) if sug else {}
+        dias_solicitados_libres = {int(d_str) for d_str, t_code in dict_sug.items() if str(d_str).isdigit() and t_code == 'L'}
+        
+        for d in dias:
+            if d not in dias_solicitados_libres:
+                modelo += x[p, d, 'L'] == 0, f"No_L_sin_solicitud_{p}_{d}"
+
+    # 8. Noches (4 a 5) y Equidad de turnos totales (16 a 18) para personas sin vacaciones
     for p in INTEGRANTES:
         dias_vac = vacs.get(p, []) if vacs else []
         if not dias_vac:
@@ -107,7 +120,7 @@ def generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vac
             modelo += turnos_totales >= 16, f"Min_turnos_equitativos_{p}"
             modelo += turnos_totales <= 18, f"Max_turnos_equitativos_{p}"
 
-    # 8. REGLAS DURAS DE SALUD LABORAL E INCOMPATIBILIDADES
+    # 9. REGLAS DURAS DE SALUD LABORAL E INCOMPATIBILIDADES
     for p in INTEGRANTES:
         if p == "JHON RIOS":
             for d in dias_semana_mapeo[0]:  # Lunes
@@ -121,7 +134,7 @@ def generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vac
             for d in dias_semana_mapeo[6]:  # Domingo
                 modelo += x[p, d, 'N'] == 0, f"Gerlis_no_noche_domingo_{d}"
 
-    # 9. LIBRES FIJOS Y EXCEPCIONES
+    # 10. LIBRES FIJOS Y EXCEPCIONES
     for p in INTEGRANTES:
         dias_fijos = conf.get(p, []) if conf else []
         for dia_wk in dias_fijos:
@@ -138,7 +151,7 @@ def generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vac
                     max_exc = 0
                 modelo += pulp.lpSum(excepciones) <= max_exc, f"Max_exc_fijo_{p}_{dia_wk}"
 
-    # 10. SUGERENCIAS Y LIBRES SOLICITADOS CON PONDERACIÓN DE PRIORIDAD
+    # 11. SUGERENCIAS Y LIBRES SOLICITADOS CON PONDERACIÓN DE PRIORIDAD
     for p in INTEGRANTES:
         prio_val = float(prio.get(p, 99)) if prio else 99.0
         peso_prioridad = max(100, int((100.0 - prio_val) * 100))
@@ -194,3 +207,4 @@ def generar_cuadro_pulp(mes_sel, ano_sel, hist_noche, hist_racha, sug, conf, vac
     df_res['TOTAL TURNOS'] = totales_t
     
     return df_res
+    
