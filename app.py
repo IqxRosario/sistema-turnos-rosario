@@ -46,7 +46,7 @@ CODIGOS_COLOR = {
 
 
 # -----------------------------------------------------------------------------
-# FUNCIONES AUXILIARES
+# FUNCIONES AUXILIARES (LÓGICA EXISTENTE, SIN CAMBIOS)
 # -----------------------------------------------------------------------------
 def normalizar_texto(texto):
     """Quita tildes y normaliza texto para comparar encabezados y nombres."""
@@ -314,4 +314,189 @@ def mostrar_reportes_pulp(df_res):
             "atenderse por conflictos con la cobertura o con solicitudes de mayor prioridad. "
             "Revisa el detalle antes de publicar el horario."
         )
-        st.dataframe
+        st.dataframe(pd.DataFrame(incumplimientos), use_container_width=True, hide_index=True)
+    else:
+        st.success("Todas las solicitudes puntuales se cumplieron.")
+
+    if patrones:
+        with st.expander("Ver patrones N-P-N-P encontrados"):
+            st.dataframe(pd.DataFrame(patrones), use_container_width=True, hide_index=True)
+
+    if reporte_carga:
+        with st.expander("Ver objetivos de carga ajustados por disponibilidad"):
+            st.dataframe(pd.DataFrame(reporte_carga), use_container_width=True, hide_index=True)
+
+
+def crear_excel(df_res, mes, ano):
+    """Exporta el cuadro y los reportes del optimizador en hojas separadas."""
+    salida = io.BytesIO()
+    incumplimientos = df_res.attrs.get("incumplimientos", [])
+    patrones = df_res.attrs.get("patrones_n_p_n_p", [])
+    diagnostico = df_res.attrs.get("diagnostico", {})
+    reporte_carga = df_res.attrs.get("reporte_carga", [])
+
+    df_turnos = df_res.copy()
+    with pd.ExcelWriter(salida, engine="openpyxl") as writer:
+        df_turnos.to_excel(writer, sheet_name="Turnos")
+        pd.DataFrame([diagnostico or {"estado": "sin datos"}]).to_excel(
+            writer, sheet_name="Diagnostico", index=False
+        )
+        if incumplimientos:
+            pd.DataFrame(incumplimientos).to_excel(
+                writer, sheet_name="Solicitudes no cumplidas", index=False
+            )
+        if patrones:
+            pd.DataFrame(patrones).to_excel(
+                writer, sheet_name="Patrones N-P-N-P", index=False
+            )
+        if reporte_carga:
+            pd.DataFrame(reporte_carga).to_excel(
+                writer, sheet_name="Carga y objetivos", index=False
+            )
+
+    salida.seek(0)
+    return salida.getvalue(), f"Turnos_{mes:02d}_{ano}.xlsx"
+
+
+def generar_y_mostrar(mes_sel, ano_sel, link_config, archivo_previo):
+    """Carga la configuración, genera, valida y muestra el horario con sus reportes."""
+    if not st.button("⚙️ Generar cuadro de turnos", key="generar_cuadro_principal", type="primary"):
+        return
+
+    with st.spinner("Leyendo configuración y optimizando los turnos..."):
+        try:
+            conf, vacs, sug, prio = procesar_configuracion_y_sugerencias(link_config)
+            hist_noche, hist_racha = procesar_historial_empalme(archivo_previo)
+
+            dias_mes = calendar.monthrange(ano_sel, mes_sel)[1]
+            errores_dias = []
+            for persona, dias_persona in vacs.items():
+                invalidos = [d for d in dias_persona if d < 1 or d > dias_mes]
+                if invalidos:
+                    errores_dias.append(f"{persona}: vacaciones en día(s) fuera del mes {invalidos}")
+            for persona, solicitudes in sug.items():
+                invalidos = [d for d in solicitudes if int(d) < 1 or int(d) > dias_mes]
+                if invalidos:
+                    errores_dias.append(f"{persona}: solicitudes en día(s) fuera del mes {invalidos}")
+            if errores_dias:
+                raise RuntimeError("Hay días inválidos en la hoja:\n- " + "\n- ".join(errores_dias))
+
+            df_res = generar_cuadro_pulp(
+                mes_sel,
+                ano_sel,
+                hist_noche,
+                hist_racha,
+                sug,
+                conf,
+                vacs,
+                prio,
+            )
+
+        except (ErrorCuadroInviable, RuntimeError, ValueError) as exc:
+            st.error(f"No se generó el cuadro. {exc}")
+            st.info(
+                "Corrige la configuración indicada y vuelve a intentarlo. No se mostrará ni descargará "
+                "un cuadro si el optimizador no puede validar una solución."
+            )
+            return
+        except Exception as exc:
+            st.error(f"Ocurrió un error inesperado al generar el cuadro: {exc}")
+            st.exception(exc)
+            return
+
+    st.success("Cuadro generado y validado correctamente.")
+    mostrar_reportes_pulp(df_res)
+    st.dataframe(aplicar_colores(df_res), use_container_width=True, height=600)
+
+    try:
+        excel_bytes, nombre_archivo = crear_excel(df_res, mes_sel, ano_sel)
+        st.download_button(
+            label="📥 Descargar cuadro e informes en Excel",
+            data=excel_bytes,
+            file_name=nombre_archivo,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="descargar_cuadro_principal",
+        )
+    except Exception as exc:
+        st.error(f"El cuadro se generó, pero no se pudo preparar el Excel: {exc}")
+
+
+# -----------------------------------------------------------------------------
+# INTERFAZ STREAMLIT (CAMBIOS SOLO VISUALES / DE NAVEGACIÓN)
+# -----------------------------------------------------------------------------
+st.set_page_config(
+    page_title="Gestor de Instrumentación",
+    page_icon="🏥",
+    layout="wide",
+)
+
+st.title("🏥 Sistema de Gestión de Turnos Rosario")
+st.caption("Generación y validación de turnos mediante optimización PuLP.")
+
+# El acceso a la hoja habitual queda siempre visible; no hay que copiar su URL.
+st.link_button(
+    "📄 Abrir hoja de sugerencias en Google Sheets",
+    url=LINK_SHEETS_DEFECTO,
+    type="secondary",
+    help="Abre directamente la pestaña de sugerencias (gid=0) en Google Sheets.",
+)
+st.caption(
+    "Desde esa hoja puedes consultar o actualizar nombres, solicitudes, días fijos, vacaciones y prioridades. "
+    "La aplicación leerá automáticamente la hoja predeterminada al generar el cuadro."
+)
+
+with st.sidebar:
+    st.header("⚙️ Configuración del cuadro")
+    hoy = datetime.date.today()
+    meses_es = [
+        "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+        "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+    ]
+    mes_sel = st.selectbox(
+        "Mes a programar",
+        options=list(range(1, 13)),
+        format_func=lambda m: meses_es[m - 1],
+        index=hoy.month - 1,
+    )
+    ano_sel = st.selectbox(
+        "Año",
+        options=list(range(hoy.year, hoy.year + 5)),
+        index=0,
+    )
+
+    archivo_previo = st.file_uploader(
+        "Excel del mes anterior (opcional)",
+        type=["xlsx", "xls"],
+        help="Se utiliza para aplicar las reglas de empalme entre meses.",
+    )
+
+    # La opción avanzada es opcional. El usuario normal no tiene que copiar una URL.
+    with st.expander("Configuración avanzada: usar otra hoja"):
+        link_personalizado = st.text_input(
+            "URL alternativa de Google Sheets",
+            value="",
+            placeholder="Deja vacío para usar la hoja habitual",
+            help="Solo rellena esto si necesitas utilizar otra hoja o pestaña. La hoja habitual está disponible en el botón de arriba.",
+        )
+        if link_personalizado.strip():
+            st.link_button("Abrir hoja alternativa", link_personalizado.strip())
+            st.caption("Al generar el cuadro se utilizará esta URL alternativa.")
+        else:
+            st.caption("Se utilizará automáticamente la hoja habitual.")
+
+link_config = link_personalizado.strip() if link_personalizado.strip() else LINK_SHEETS_DEFECTO
+
+st.divider()
+st.subheader("Generar horario")
+st.info(
+    "Las vacaciones, la cobertura diaria, los libres fijos intocables y las restricciones individuales no se relajan. "
+    "Las solicitudes puntuales se optimizan por prioridad; los conflictos se muestran en un informe. "
+    "Los objetivos de turnos y noches se ajustan por disponibilidad y son secundarios frente a la cobertura."
+)
+
+st.markdown("**Motor de generación:** Optimización PuLP")
+st.write(
+    "Se utiliza un único motor para evitar confusiones entre pestañas que ejecutaban el mismo algoritmo. "
+    "El resultado incluye el cuadro, las solicitudes no satisfechas y los patrones N-P-N-P detectados."
+)
+generar_y_mostrar(mes_sel, ano_sel, link_config, archivo_previo)
